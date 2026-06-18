@@ -20,6 +20,7 @@ function toast(msg) {
 const SG_CENTER = [103.8198, 1.3521];
 const OSM_STYLE = {
   version: 8,
+  glyphs: "https://fonts.openmaptiles.org/{fontstack}/{range}.pbf",
   sources: { osm: { type: "raster", tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"], tileSize: 256, attribution: "© OpenStreetMap contributors" } },
   layers: [{ id: "osm", type: "raster", source: "osm" }],
 };
@@ -81,11 +82,11 @@ function publicNav() {
   const nav = el(`
     <header class="nav">
       <div class="wrap nav-inner">
-        <a class="brand" href="#/"><span class="logo">🩺</span> Street Doctor <span class="muted" style="font-weight:600;font-size:13px">SG</span></a>
+        <a class="brand" href="#/"><span class="logo">🩺</span> ${esc(DB.settings().site_name)}</a>
         <button class="nav-toggle" aria-label="Menu">☰</button>
         <nav class="nav-links">
           <a href="#/map">Map</a>
-          <a href="#/report">Report an issue</a>
+          <a href="#/map?report=1">Report an issue</a>
           <a href="#/about">About</a>
           <a href="#/faq">FAQ</a>
           <a href="#/emergency">Emergency</a>
@@ -99,14 +100,14 @@ function publicNav() {
 }
 
 function footer() {
+  const st = DB.settings();
   return el(`
     <footer class="footer">
       <div class="wrap cols">
         <div class="grow" style="min-width:220px">
-          <div class="brand" style="font-size:16px"><span class="logo">🩺</span> Street Doctor SG</div>
+          <div class="brand" style="font-size:16px"><span class="logo">🩺</span> ${esc(st.site_name)}</div>
           <p class="muted" style="font-size:13px;max-width:42ch;margin-top:10px">
-            A civic street-audit platform by an NTU–NUS student team in collaboration with the
-            Singapore Transport Collective (STC). Not an official government service.
+            ${esc(st.footer_blurb)}
           </p>
         </div>
         <div><h5>Site</h5>
@@ -164,14 +165,18 @@ function disclaimerBanner() {
  * ============================================================ */
 route(/^\/$/, function home() {
   const s = DB.stats();
+  const st = DB.settings();
+  const heroBg = st.hero_image
+    ? `background:linear-gradient(160deg, rgba(233,243,239,.85) 0%, rgba(245,246,248,.7) 60%), url('${st.hero_image}') center/cover`
+    : "";
   const view = pageShell(
     el(`
-      <section class="hero">
+      <section class="hero" style="${heroBg}">
         <div class="wrap">
-          <h1>Map the street design problems Singapore lives with every day.</h1>
-          <p class="lead">Report missing footpaths, unsafe crossings and accessibility barriers. We structure the evidence and hand it to STC to advocate with LTA and the authorities.</p>
+          <h1>${esc(st.hero_title)}</h1>
+          <p class="lead">${esc(st.hero_subtitle)}</p>
           <div class="cta row">
-            <a class="btn btn-accent" href="#/report">＋ Report an issue</a>
+            <a class="btn btn-accent" href="#/map">＋ Report an issue</a>
             <a class="btn btn-ghost" href="#/map">View the map</a>
           </div>
         </div>
@@ -180,10 +185,10 @@ route(/^\/$/, function home() {
     el(`
       <section class="wrap section" style="padding-top:0">
         <div class="grid grid-4">
-          <div class="card stat"><div class="n">${s.total}</div><div class="l">Published cases</div></div>
-          <div class="card stat"><div class="n">${s.improved}</div><div class="l">Improved</div></div>
-          <div class="card stat"><div class="n">${s.supporters}</div><div class="l">Resident supports</div></div>
-          <div class="card stat"><div class="n">7</div><div class="l">Problem types tracked</div></div>
+          <div class="card stat"><div class="n">${s.total}</div><div class="l">${esc(st.stat_total_label)}</div></div>
+          <div class="card stat"><div class="n">${s.improved}</div><div class="l">${esc(st.stat_improved_label)}</div></div>
+          <div class="card stat"><div class="n">${s.supporters}</div><div class="l">${esc(st.stat_supporters_label)}</div></div>
+          <div class="card stat"><div class="n">${DB.activeCategories().length}</div><div class="l">Problem types tracked</div></div>
         </div>
       </section>`),
     el(`
@@ -200,7 +205,7 @@ route(/^\/$/, function home() {
               <li>STC reviews and publishes it on the map.</li>
               <li>Residents support cases; STC tracks progress with authorities.</li>
             </ol>
-            <a class="btn btn-primary btn-block" href="#/report" style="margin-top:12px">Start a report</a>
+            <a class="btn btn-primary btn-block" href="#/map?report=1" style="margin-top:12px">Start a report</a>
           </div>
         </div>
       </section>`),
@@ -250,21 +255,81 @@ function addMarker(map, issue, interactive = true) {
 }
 
 /* ============================================================
- * MAP  /map
+ * Overpass road-segment lookup (junction-to-junction)
  * ============================================================ */
-route(/^\/map$/, function mapPage() {
+const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
+const OVERPASS_HWY = "primary|secondary|tertiary|residential|unclassified|living_street|trunk|service|road|primary_link|secondary_link|tertiary_link|trunk_link|pedestrian|footway";
+
+function pointToSegDist(p, a, b) {
+  const sx = Math.cos((p[1] * Math.PI) / 180);
+  const ax = a[0] * sx, ay = a[1], bx = b[0] * sx, by = b[1], px = p[0] * sx, py = p[1];
+  const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy;
+  let t = L ? ((px - ax) * dx + (py - ay) * dy) / L : 0;
+  t = Math.max(0, Math.min(1, t));
+  const cx = ax + t * dx, cy = ay + t * dy;
+  return Math.hypot(px - cx, py - cy);
+}
+
+// Returns { coords:[[lng,lat]...], name } for the road segment between the two
+// junctions surrounding the click, or null. Throws on network failure.
+async function fetchRoadSegment(lng, lat) {
+  const q = `[out:json][timeout:25];way(around:35,${lat},${lng})[highway~"^(${OVERPASS_HWY})$"];(._;>;);out;`;
+  const res = await fetch(OVERPASS_URL, { method: "POST", body: "data=" + encodeURIComponent(q) });
+  if (!res.ok) throw new Error("Overpass " + res.status);
+  const data = await res.json();
+  const nodes = {}, ways = [];
+  for (const e of data.elements) {
+    if (e.type === "node") nodes[e.id] = [e.lon, e.lat];
+    else if (e.type === "way" && e.nodes) ways.push(e);
+  }
+  if (!ways.length) return null;
+  const usage = {};
+  for (const w of ways) for (const n of w.nodes) usage[n] = (usage[n] || 0) + 1;
+  const click = [lng, lat];
+  let best = null, bestD = Infinity, bestSeg = 0;
+  for (const w of ways) {
+    const pts = w.nodes.map((n) => nodes[n]);
+    for (let i = 0; i < pts.length - 1; i++) {
+      if (!pts[i] || !pts[i + 1]) continue;
+      const d = pointToSegDist(click, pts[i], pts[i + 1]);
+      if (d < bestD) { bestD = d; best = w; bestSeg = i; }
+    }
+  }
+  if (!best) return null;
+  const seq = best.nodes;
+  const isB = (idx) => idx === 0 || idx === seq.length - 1 || usage[seq[idx]] >= 2;
+  let lo = bestSeg; while (lo > 0 && !isB(lo)) lo--;
+  let hi = bestSeg + 1; while (hi < seq.length - 1 && !isB(hi)) hi++;
+  const coords = seq.slice(lo, hi + 1).map((n) => nodes[n]).filter(Boolean);
+  if (coords.length < 2) return null;
+  const name = (best.tags && (best.tags.name || best.tags.ref)) || null;
+  return { coords, name };
+}
+
+const segMidpoint = (coords) => coords[Math.floor(coords.length / 2)];
+
+/* ============================================================
+ * MAP  /map   (filters + transit layer + inline report drawer)
+ * ============================================================ */
+route(/^\/map(?:\?.*)?$/, function mapPage() {
+  const params = new URLSearchParams((window.location.hash.split("?")[1] || ""));
   const active = { cats: new Set(), statuses: new Set() };
+  let showTransit = false;
 
   const filters = el(`
     <div class="map-filters">
       <h4>Problem type</h4>
       <div class="filter-list" id="f-cats">
-        ${CATEGORIES.map((c) => `<span class="chip" data-cat="${c.slug}"><span class="dot" style="background:${c.color}"></span>${esc(c.label)}</span>`).join("")}
+        ${DB.activeCategories().map((c) => `<span class="chip" data-cat="${c.slug}"><span class="dot" style="background:${c.color}"></span>${esc(c.label)}</span>`).join("")}
       </div>
       <h4>Status</h4>
       <div class="filter-list" id="f-status">
         ${["published","under_stc_review","referred_to_official_channel","response_received","improvement_in_progress","improved","duplicate","archived"]
           .map((s) => `<span class="chip" data-status="${s}"><span class="dot" style="background:${STATUSES[s].color}"></span>${esc(STATUSES[s].label)}</span>`).join("")}
+      </div>
+      <h4>Layers</h4>
+      <div class="filter-list">
+        <span class="chip" id="toggle-transit"><span class="dot" style="background:#0984e3"></span>🚉 Transit stations</span>
       </div>
       <button class="btn btn-ghost btn-sm btn-block" id="clear-filters" style="margin-top:12px">Clear filters</button>
     </div>`);
@@ -272,7 +337,11 @@ route(/^\/map$/, function mapPage() {
   const wrapEl = el(`
     <div class="map-page">
       <div id="map"></div>
-      <a class="btn btn-accent fab" href="#/report">＋ Report</a>
+      <button class="btn btn-accent fab" id="open-report">＋ Report</button>
+      <aside class="report-drawer" id="report-drawer">
+        <header><h3>Report an issue</h3><button class="drawer-close" id="drawer-close" aria-label="Close">✕</button></header>
+        <div class="drawer-body" id="drawer-body"></div>
+      </aside>
     </div>`);
   wrapEl.prepend(filters);
 
@@ -282,18 +351,121 @@ route(/^\/map$/, function mapPage() {
     const map = new maplibregl.Map({ container: "map", style: OSM_STYLE, center: SG_CENTER, zoom: 11.2 });
     map.addControl(new maplibregl.NavigationControl(), "bottom-right");
     map.addControl(new maplibregl.GeolocateControl({ positionOptions: { enableHighAccuracy: true }, trackUserLocation: false }), "bottom-right");
-    let markers = [];
+
+    let issueMarkers = [];
+    const drawer = wrapEl.querySelector("#report-drawer");
+    let panel = null;            // report panel api when open
+    let mode = "point";          // "point" | "segment"
+    let pinMarker = null;
 
     function draw() {
-      markers.forEach((m) => m.remove());
-      markers = [];
-      DB.publicIssues()
+      issueMarkers.forEach((m) => m.remove());
+      issueMarkers = [];
+      const rows = DB.publicIssues()
         .filter((i) => active.cats.size === 0 || active.cats.has(i.category))
-        .filter((i) => active.statuses.size === 0 || active.statuses.has(i.status))
-        .forEach((i) => markers.push(addMarker(map, i, true)));
+        .filter((i) => active.statuses.size === 0 || active.statuses.has(i.status));
+      rows.forEach((i) => issueMarkers.push(addMarker(map, i, true)));
+      // existing issue segments as a highlight layer
+      const src = map.getSource("issue-segs");
+      if (src) {
+        const segFeatures = rows.filter((i) => i.geometry && i.geometry.length > 1)
+          .map((i) => ({ type: "Feature", geometry: { type: "LineString", coordinates: i.geometry }, properties: { color: (catBySlug(i.category) || {}).color || "#e4572e" } }));
+        src.setData({ type: "FeatureCollection", features: segFeatures });
+      }
     }
-    map.on("load", draw);
 
+    map.on("load", () => {
+      // issue + report segment line layers
+      map.addSource("issue-segs", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+      map.addLayer({ id: "issue-segs", type: "line", source: "issue-segs",
+        paint: { "line-color": ["get", "color"], "line-width": 5, "line-opacity": 0.55 } });
+      map.addSource("report-seg", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+      map.addLayer({ id: "report-seg", type: "line", source: "report-seg",
+        paint: { "line-color": "#e4572e", "line-width": 6, "line-opacity": 0.9 } });
+
+      // transit stations layer (hidden until toggled)
+      map.addSource("transit", { type: "geojson", data: {
+        type: "FeatureCollection",
+        features: TRANSIT_STATIONS.map((t) => ({ type: "Feature",
+          geometry: { type: "Point", coordinates: [t.lng, t.lat] },
+          properties: { id: t.id, name: t.name, color: t.color, type: t.type, lines: t.lines.join(", ") } })),
+      }});
+      map.addLayer({ id: "transit-stations", type: "circle", source: "transit",
+        layout: { visibility: "none" },
+        paint: { "circle-radius": 6, "circle-color": ["get", "color"], "circle-stroke-color": "#fff", "circle-stroke-width": 2 } });
+      map.addLayer({ id: "transit-labels", type: "symbol", source: "transit",
+        layout: { visibility: "none", "text-field": ["get", "name"], "text-font": ["Open Sans Regular"], "text-size": 11, "text-offset": [0, 1.1], "text-anchor": "top" },
+        paint: { "text-halo-color": "#fff", "text-halo-width": 1.5, "text-color": "#333" } });
+
+      map.on("mouseenter", "transit-stations", () => (map.getCanvas().style.cursor = "pointer"));
+      map.on("mouseleave", "transit-stations", () => (map.getCanvas().style.cursor = ""));
+      map.on("click", "transit-stations", (e) => {
+        const f = e.features[0];
+        const st = transitById(f.properties.id);
+        e.originalEvent._handledTransit = true;
+        if (st) { openDrawer(); panel && panel.prefillStation(st); }
+      });
+
+      draw();
+      if (params.get("report") === "1") openDrawer();
+    });
+
+    // map click → set point or fetch segment (only while drawer open)
+    map.on("click", async (e) => {
+      if (!drawer.classList.contains("open")) return;
+      if (e.originalEvent && e.originalEvent._handledTransit) return;
+      if (mode === "segment") {
+        panel && panel.segmentLoading();
+        try {
+          const seg = await fetchRoadSegment(e.lngLat.lng, e.lngLat.lat);
+          if (seg) {
+            map.getSource("report-seg").setData({ type: "FeatureCollection", features: [{ type: "Feature", geometry: { type: "LineString", coordinates: seg.coords }, properties: {} }] });
+            const mid = segMidpoint(seg.coords);
+            placePin(mid[0], mid[1]);
+            panel && panel.setSegment(seg);
+          } else { panel && panel.segmentFailed("No road found there — try clicking directly on a road."); }
+        } catch (err) {
+          panel && panel.segmentFailed("Couldn't reach OpenStreetMap. Place a pin instead.");
+        }
+        setMode("point");
+      } else {
+        placePin(e.lngLat.lng, e.lngLat.lat);
+        panel && panel.setLocation(e.lngLat.lng, e.lngLat.lat);
+      }
+    });
+
+    function placePin(lng, lat) {
+      if (!pinMarker) {
+        pinMarker = new maplibregl.Marker({ color: "#e4572e", draggable: true }).setLngLat([lng, lat]).addTo(map);
+        pinMarker.on("dragend", () => { const p = pinMarker.getLngLat(); panel && panel.setLocation(p.lng, p.lat); });
+      } else pinMarker.setLngLat([lng, lat]);
+    }
+    function clearReportGeo() {
+      if (pinMarker) { pinMarker.remove(); pinMarker = null; }
+      map.getSource("report-seg") && map.getSource("report-seg").setData({ type: "FeatureCollection", features: [] });
+    }
+    function setMode(m) {
+      mode = m;
+      map.getCanvas().style.cursor = m === "segment" ? "crosshair" : "";
+      panel && panel.reflectMode(m);
+    }
+
+    function openDrawer() {
+      drawer.classList.add("open");
+      const rep = { lng: null, lat: null, address_text: "", category: DB.activeCategories()[0]?.slug || "",
+        title: "", description: "", affected_users: [], photos: [], email: "", consent: false, turnstile: false,
+        geometry: null, asset_type: "street", transit_ref: null };
+      panel = mountReportPanel(wrapEl.querySelector("#drawer-body"), rep, {
+        requestMode: setMode, clearGeo: () => { clearReportGeo(); }, placePin, map,
+        onSubmitted: () => { clearReportGeo(); setMode("point"); draw(); },
+      });
+    }
+    function closeDrawer() { drawer.classList.remove("open"); clearReportGeo(); setMode("point"); panel = null; }
+
+    wrapEl.querySelector("#open-report").onclick = openDrawer;
+    wrapEl.querySelector("#drawer-close").onclick = closeDrawer;
+
+    // filters
     filters.querySelectorAll("[data-cat]").forEach((chip) =>
       chip.addEventListener("click", () => {
         const k = chip.dataset.cat; active.cats.has(k) ? active.cats.delete(k) : active.cats.add(k);
@@ -304,14 +476,182 @@ route(/^\/map$/, function mapPage() {
         const k = chip.dataset.status; active.statuses.has(k) ? active.statuses.delete(k) : active.statuses.add(k);
         chip.classList.toggle("on"); draw();
       }));
+    const transitChip = filters.querySelector("#toggle-transit");
+    transitChip.onclick = () => {
+      showTransit = !showTransit;
+      transitChip.classList.toggle("on", showTransit);
+      const v = showTransit ? "visible" : "none";
+      map.setLayoutProperty("transit-stations", "visibility", v);
+      map.setLayoutProperty("transit-labels", "visibility", v);
+    };
     filters.querySelector("#clear-filters").onclick = () => {
       active.cats.clear(); active.statuses.clear();
-      filters.querySelectorAll(".chip").forEach((c) => c.classList.remove("on")); draw();
+      filters.querySelectorAll(".chip:not(#toggle-transit)").forEach((c) => c.classList.remove("on")); draw();
     };
   }, 0);
 
   return view;
 });
+
+/* ============================================================
+ * Inline report panel (used inside the map drawer)
+ * Renders a condensed single-scroll form; the map feeds it
+ * location / segment / station selections via the returned api.
+ * ============================================================ */
+function mountReportPanel(container, rep, hooks) {
+  let segMode = false;
+
+  container.innerHTML = "";
+  const body = el(`<div></div>`);
+
+  const locBlock = el(`
+    <div>
+      <div class="loc-hint" id="loc-hint">📍 Click the map to set the location (or drag the pin).</div>
+      <div class="loc-status muted" id="loc-status">No location selected yet.</div>
+      <div class="row" style="gap:8px;align-items:center">
+        <button class="btn btn-ghost btn-sm seg-toggle" id="seg-toggle">🛣️ Highlight road segment</button>
+        <button class="btn btn-ghost btn-sm hidden" id="seg-clear">Clear segment</button>
+      </div>
+      <div class="loc-status muted" id="seg-status"></div>
+      <div id="transit-row"></div>
+    </div>`);
+  body.appendChild(locBlock);
+
+  const form = el(`
+    <div style="margin-top:14px">
+      <label class="field">Problem type
+        <select id="r-cat">${DB.activeCategories().map((c) => `<option value="${c.slug}">${esc(c.label)}</option>`).join("")}</select></label>
+      <label class="field">Title
+        <input type="text" id="r-title" maxlength="120" placeholder="Short summary"></label>
+      <label class="field">Description
+        <textarea id="r-desc" placeholder="What is the problem, when is it worst, who does it affect?"></textarea></label>
+      <div class="field">Who is affected
+        <div class="row" id="r-affected" style="margin-top:8px">
+          ${AFFECTED_USERS.map((u) => `<button type="button" class="chip" data-u="${u.id}">${esc(u.label)}</button>`).join("")}
+        </div>
+      </div>
+      <div class="field">Photos <span class="muted" style="font-weight:400">(max 3)</span>
+        <div class="photo-grid" id="r-photos"></div>
+      </div>
+      <label class="field">Email <span class="muted" style="font-weight:400">(optional)</span>
+        <input type="email" id="r-email" placeholder="you@example.com"></label>
+      <label class="checkbox"><input type="checkbox" id="r-consent"> <span>I agree to the <a href="#/privacy" target="_blank">privacy policy</a> &amp; <a href="#/terms" target="_blank">terms</a>.</span></label>
+      <label class="checkbox"><input type="checkbox" id="r-turnstile"> <span>I'm human (simulated Turnstile).</span></label>
+      <button class="btn btn-accent btn-block" id="r-submit" style="margin-top:8px">Submit report</button>
+      <p class="help" style="text-align:center;margin-top:8px">Your report stays private until an STC moderator publishes it.</p>
+    </div>`);
+  body.appendChild(form);
+  container.appendChild(body);
+
+  // ----- field bindings -----
+  const $$ = (s) => body.querySelector(s);
+  $$("#r-cat").value = rep.category;
+  $$("#r-cat").onchange = (e) => { rep.category = e.target.value; };
+  $$("#r-title").oninput = (e) => { rep.title = e.target.value; };
+  $$("#r-desc").oninput = (e) => { rep.description = e.target.value; };
+  $$("#r-email").oninput = (e) => { rep.email = e.target.value; };
+  $$("#r-consent").onchange = (e) => { rep.consent = e.target.checked; };
+  $$("#r-turnstile").onchange = (e) => { rep.turnstile = e.target.checked; };
+  body.querySelectorAll("#r-affected .chip").forEach((chip) => chip.onclick = () => {
+    const id = chip.dataset.u, i = rep.affected_users.indexOf(id);
+    i >= 0 ? rep.affected_users.splice(i, 1) : rep.affected_users.push(id);
+    chip.classList.toggle("on");
+  });
+
+  // photos
+  function paintPhotos() {
+    const grid = $$("#r-photos"); grid.innerHTML = "";
+    rep.photos.forEach((p, idx) => {
+      const t = el(`<div class="photo-thumb"><img src="${p}"><button title="Remove">✕</button></div>`);
+      t.querySelector("button").onclick = () => { rep.photos.splice(idx, 1); paintPhotos(); };
+      grid.appendChild(t);
+    });
+    if (rep.photos.length < 3) {
+      const add = el(`<label class="photo-thumb" style="display:grid;place-items:center;cursor:pointer;color:var(--ink-soft)"><span style="font-size:26px">＋</span><input type="file" accept="image/png,image/jpeg,image/webp" class="hidden"></label>`);
+      add.querySelector("input").onchange = (e) => handlePhoto(e, rep, paintPhotos);
+      grid.appendChild(add);
+    }
+  }
+  paintPhotos();
+
+  // segment toggle
+  $$("#seg-toggle").onclick = () => {
+    segMode = !segMode;
+    $$("#seg-toggle").classList.toggle("on", segMode);
+    hooks.requestMode(segMode ? "segment" : "point");
+    $$("#seg-status").textContent = segMode ? "Now click the road on the map…" : "";
+  };
+  $$("#seg-clear").onclick = () => {
+    rep.geometry = null;
+    hooks.clearGeo();
+    $$("#seg-clear").classList.add("hidden");
+    $$("#seg-status").textContent = "";
+    rep.lng = rep.lat = null; updateLocStatus();
+  };
+
+  $$("#r-submit").onclick = () => {
+    if (rep.lng == null || rep.lat == null) return toast("Set a location on the map first.");
+    if (!rep.category) return toast("Pick a problem type.");
+    if (!rep.title.trim()) return toast("A title is required.");
+    if (!rep.description.trim()) return toast("A description is required.");
+    if (!rep.consent) return toast("Please accept the privacy & terms.");
+    if (!rep.turnstile) return toast("Please complete the human check.");
+    const issue = DB.addIssue({
+      category: rep.category, title: rep.title.trim(), description: rep.description.trim(),
+      affected_users: rep.affected_users, lng: rep.lng, lat: rep.lat, address_text: rep.address_text,
+      photos: rep.photos, email: rep.email || null, geometry: rep.geometry,
+      asset_type: rep.asset_type, transit_ref: rep.transit_ref,
+    });
+    hooks.onSubmitted(issue);
+    showSuccess();
+  };
+
+  function updateLocStatus() {
+    const s = $$("#loc-status");
+    s.textContent = rep.lat != null ? `📍 ${rep.lat.toFixed(5)}, ${rep.lng.toFixed(5)}${rep.address_text ? " · " + rep.address_text : ""}` : "No location selected yet.";
+    s.classList.toggle("muted", rep.lat == null);
+  }
+
+  function showSuccess() {
+    container.innerHTML = "";
+    container.appendChild(el(`
+      <div class="center" style="padding:20px 4px">
+        <div style="font-size:40px">✅</div>
+        <h3>Report submitted</h3>
+        <p class="muted">It's now pending moderation and will appear on the map once STC publishes it.</p>
+        <button class="btn btn-primary btn-block" id="again">Report another</button>
+      </div>`));
+    container.querySelector("#again").onclick = () => mountReportPanel(container, {
+      lng: null, lat: null, address_text: "", category: DB.activeCategories()[0]?.slug || "",
+      title: "", description: "", affected_users: [], photos: [], email: "", consent: false,
+      turnstile: false, geometry: null, asset_type: "street", transit_ref: null }, hooks);
+  }
+
+  // ----- api exposed to the map -----
+  return {
+    setLocation(lng, lat) { rep.lng = lng; rep.lat = lat; updateLocStatus(); },
+    setSegment(seg) {
+      rep.geometry = seg.coords;
+      if (seg.name && !rep.address_text) rep.address_text = seg.name;
+      $$("#seg-clear").classList.remove("hidden");
+      $$("#seg-status").textContent = `🛣️ Segment highlighted${seg.name ? " — " + seg.name : ""} (${seg.coords.length} pts)`;
+      updateLocStatus();
+    },
+    segmentLoading() { $$("#seg-status").textContent = "Looking up the road segment…"; },
+    segmentFailed(msg) { $$("#seg-status").textContent = msg; },
+    reflectMode(m) { segMode = m === "segment"; $$("#seg-toggle").classList.toggle("on", segMode); },
+    prefillStation(st) {
+      rep.asset_type = "transit"; rep.transit_ref = st.name;
+      rep.lng = st.lng; rep.lat = st.lat; rep.address_text = st.name + " (" + st.lines.join("/") + ")";
+      const tc = DB.activeCategories().find((c) => c.slug === "transit-stop-access");
+      if (tc) { rep.category = tc.slug; $$("#r-cat").value = tc.slug; }
+      hooks.placePin(st.lng, st.lat);
+      $$("#transit-row").innerHTML = `<div style="margin-top:8px"><span class="transit-pill">🚉 ${esc(st.name)} · ${esc(st.type)}</span></div>`;
+      updateLocStatus();
+      toast("Reporting about " + st.name);
+    },
+  };
+}
 
 /* ============================================================
  * REPORT  /report  (multi-step form)
@@ -435,7 +775,7 @@ function renderStep(step, d, onChange, nav) {
 
   if (step === 3) {
     const grid = el(`<div class="grid grid-2" style="margin-top:6px"></div>`);
-    CATEGORIES.forEach((c) => {
+    DB.activeCategories().forEach((c) => {
       const chip = el(`<button class="chip ${d.category === c.slug ? "on" : ""}" style="justify-content:flex-start;padding:14px"><span class="dot" style="background:${c.color}"></span>${c.icon} ${esc(c.label)}</button>`);
       chip.onclick = () => { d.category = c.slug; onChange(); };
       grid.appendChild(chip);
@@ -595,6 +935,8 @@ route(/^\/issues\/([\w-]+)$/, function issueDetail(id) {
       <a href="#/map" class="muted" style="font-size:14px">← Back to map</a>
       <div class="detail-head" style="margin-top:10px">
         ${statusBadge(issue.status)} ${categoryTag(issue.category)}
+        ${issue.asset_type === "transit" && issue.transit_ref ? `<span class="transit-pill">🚉 ${esc(issue.transit_ref)}</span>` : ""}
+        ${issue.geometry && issue.geometry.length > 1 ? `<span class="tag">🛣️ Road segment</span>` : ""}
       </div>
       <h1 style="margin-bottom:6px">${esc(issue.title)}</h1>
       <p class="muted" style="margin-top:0">📍 ${esc(issue.address_text || "Location on map")} · Reported ${fmtDate(issue.created_at)} · Updated ${fmtDate(issue.updated_at)}</p>
@@ -650,6 +992,14 @@ route(/^\/issues\/([\w-]+)$/, function issueDetail(id) {
   setTimeout(() => {
     const map = new maplibregl.Map({ container: "detail-map", style: OSM_STYLE, center: [issue.lng, issue.lat], zoom: 15, interactive: true, attributionControl: false });
     new maplibregl.Marker({ color: cat?.color || "#e4572e" }).setLngLat([issue.lng, issue.lat]).addTo(map);
+    if (issue.geometry && issue.geometry.length > 1) {
+      map.on("load", () => {
+        map.addSource("seg", { type: "geojson", data: { type: "Feature", geometry: { type: "LineString", coordinates: issue.geometry }, properties: {} } });
+        map.addLayer({ id: "seg", type: "line", source: "seg", paint: { "line-color": cat?.color || "#e4572e", "line-width": 6, "line-opacity": 0.85 } });
+        const b = issue.geometry.reduce((bb, c) => bb.extend(c), new maplibregl.LngLatBounds(issue.geometry[0], issue.geometry[0]));
+        map.fitBounds(b, { padding: 40, maxZoom: 16, duration: 0 });
+      });
+    }
     map.scrollZoom.disable();
   }, 0);
 
@@ -738,6 +1088,8 @@ function adminShell(activePath, ...children) {
           <a href="#/admin/issues">Cases</a>
           <a href="#/admin/duplicates">Duplicates</a>
           <a href="#/admin/export">Export</a>
+          <a href="#/admin/categories">Categories</a>
+          <a href="#/admin/settings">Content</a>
           <a href="#/" >View site ↗</a>
           <a href="#/admin/logout" id="logout">Log out</a>
         </nav>
@@ -842,7 +1194,7 @@ route(/^\/admin\/issues(?:\?.*)?$/, function adminIssues() {
           </select></label>
         <label class="field grow" style="margin:0">Type
           <select id="f-cat"><option value="">All types</option>
-            ${CATEGORIES.map((c) => `<option value="${c.slug}">${esc(c.label)}</option>`).join("")}
+            ${DB.activeCategories().map((c) => `<option value="${c.slug}">${esc(c.label)}</option>`).join("")}
           </select></label>
         <label class="field grow" style="margin:0">Sort by
           <select id="f-sort">
@@ -926,7 +1278,7 @@ route(/^\/admin\/issues\/([\w-]+)$/, function adminIssueEdit(id) {
     <label class="field">Title <input type="text" id="e-title" value="${esc(issue.title)}"></label>
     <label class="field">Description <textarea id="e-desc">${esc(issue.description)}</textarea></label>
     <label class="field">Category
-      <select id="e-cat">${CATEGORIES.map((c) => `<option value="${c.slug}" ${c.slug === issue.category ? "selected" : ""}>${esc(c.label)}</option>`).join("")}</select></label>
+      <select id="e-cat">${DB.categories().map((c) => `<option value="${c.slug}" ${c.slug === issue.category ? "selected" : ""}>${esc(c.label)}${c.is_active ? "" : " (inactive)"}</option>`).join("")}</select></label>
     <label class="field">Address text <input type="text" id="e-addr" value="${esc(issue.address_text || "")}"></label>
     <div class="row">
       <label class="field grow">Latitude <input type="text" id="e-lat" value="${issue.lat}"></label>
@@ -1075,7 +1427,7 @@ route(/^\/admin\/export$/, function adminExport() {
         </select></label>
       <label class="field">Type filter
         <select id="exp-cat"><option value="">All types</option>
-          ${CATEGORIES.map((c) => `<option value="${c.slug}">${esc(c.label)}</option>`).join("")}</select></label>
+          ${DB.activeCategories().map((c) => `<option value="${c.slug}">${esc(c.label)}</option>`).join("")}</select></label>
       <div class="row" style="margin-top:8px">
         <button class="btn btn-primary" id="exp-csv">⬇ Export CSV</button>
         <button class="btn btn-ghost" id="exp-geo">⬇ Export GeoJSON</button>
@@ -1117,6 +1469,139 @@ route(/^\/admin\/export$/, function adminExport() {
 
   const view = el("<div></div>");
   view.appendChild(adminShell("/admin/export", main));
+  return view;
+});
+
+/* ============================================================
+ * ADMIN — site content / settings
+ * ============================================================ */
+route(/^\/admin\/settings$/, function adminSettings() {
+  const st = DB.settings();
+  const main = el(`<div class="wrap section" style="max-width:720px">
+    <h1>Site content</h1>
+    <p class="muted">Edit the public-facing text and homepage image. Changes apply immediately across the site.</p>
+    <div class="card">
+      <label class="field">Site name <input type="text" id="s-name" value="${esc(st.site_name)}"></label>
+      <label class="field">Hero heading <input type="text" id="s-htitle" value="${esc(st.hero_title)}"></label>
+      <label class="field">Hero subtitle <textarea id="s-hsub">${esc(st.hero_subtitle)}</textarea></label>
+      <div class="field">Hero background image
+        <div class="row" style="align-items:center;margin-top:8px">
+          <div id="hero-preview" style="width:120px;height:68px;border-radius:8px;border:1px solid var(--line);background:${st.hero_image ? `url('${st.hero_image}') center/cover` : "#e9f3ef"}"></div>
+          <label class="btn btn-ghost btn-sm">Upload image<input type="file" id="s-himg" accept="image/png,image/jpeg,image/webp" class="hidden"></label>
+          ${st.hero_image ? `<button class="btn btn-ghost btn-sm" id="s-himg-clear">Remove</button>` : ""}
+        </div>
+        <div class="help">Stored as a data URL in this prototype. Production would upload to Supabase Storage.</div>
+      </div>
+      <div class="row">
+        <label class="field grow">Stat 1 label <input type="text" id="s-l1" value="${esc(st.stat_total_label)}"></label>
+        <label class="field grow">Stat 2 label <input type="text" id="s-l2" value="${esc(st.stat_improved_label)}"></label>
+        <label class="field grow">Stat 3 label <input type="text" id="s-l3" value="${esc(st.stat_supporters_label)}"></label>
+      </div>
+      <label class="field">Footer blurb <textarea id="s-foot">${esc(st.footer_blurb)}</textarea></label>
+      <div class="row" style="margin-top:6px">
+        <button class="btn btn-primary" id="s-save">Save content</button>
+        <button class="btn btn-ghost" id="s-reset">Reset to defaults</button>
+      </div>
+    </div>
+  </div>`);
+
+  let heroImage = st.hero_image;
+  main.querySelector("#s-himg").onchange = (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    if (f.size > 5 * 1024 * 1024) return toast("Max 5MB.");
+    const rd = new FileReader();
+    rd.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const max = 1600; let { width, height } = img;
+        if (width > max) { height = Math.round(height * max / width); width = max; }
+        const cv = document.createElement("canvas"); cv.width = width; cv.height = height;
+        cv.getContext("2d").drawImage(img, 0, 0, width, height);
+        heroImage = cv.toDataURL("image/jpeg", 0.82);
+        main.querySelector("#hero-preview").style.background = `url('${heroImage}') center/cover`;
+        toast("Image ready — remember to Save");
+      };
+      img.src = rd.result;
+    };
+    rd.readAsDataURL(f);
+  };
+  const clearBtn = main.querySelector("#s-himg-clear");
+  if (clearBtn) clearBtn.onclick = () => { heroImage = ""; main.querySelector("#hero-preview").style.background = "#e9f3ef"; toast("Image cleared — remember to Save"); };
+
+  main.querySelector("#s-save").onclick = () => {
+    DB.saveSettings({
+      site_name: main.querySelector("#s-name").value.trim() || "Street Doctor SG",
+      hero_title: main.querySelector("#s-htitle").value.trim(),
+      hero_subtitle: main.querySelector("#s-hsub").value.trim(),
+      hero_image: heroImage,
+      stat_total_label: main.querySelector("#s-l1").value.trim(),
+      stat_improved_label: main.querySelector("#s-l2").value.trim(),
+      stat_supporters_label: main.querySelector("#s-l3").value.trim(),
+      footer_blurb: main.querySelector("#s-foot").value.trim(),
+    });
+    toast("Content saved"); render();
+  };
+  main.querySelector("#s-reset").onclick = () => {
+    if (!confirm("Reset all site content to defaults?")) return;
+    DB.saveSettings(structuredClone(DEFAULT_SETTINGS)); toast("Reset to defaults"); render();
+  };
+
+  const view = el("<div></div>");
+  view.appendChild(adminShell("/admin/settings", main));
+  return view;
+});
+
+/* ============================================================
+ * ADMIN — categories management
+ * ============================================================ */
+route(/^\/admin\/categories$/, function adminCategories() {
+  const main = el(`<div class="wrap section" style="max-width:720px">
+    <h1>Problem categories</h1>
+    <p class="muted">Edit labels, toggle visibility, or add new categories. Inactive categories stay on existing cases but can't be picked for new reports.</p>
+    <div class="card" style="padding:0"><div class="table-scroll"><table class="table" id="cat-table"></table></div></div>
+    <div class="card" style="margin-top:16px">
+      <h3>Add a category</h3>
+      <div class="row">
+        <label class="field grow" style="margin:0">Label <input type="text" id="nc-label" placeholder="e.g. Flooding-prone path"></label>
+        <label class="field" style="margin:0;width:90px">Icon <input type="text" id="nc-icon" placeholder="🌊" maxlength="2"></label>
+        <label class="field" style="margin:0;width:90px">Colour <input type="text" id="nc-color" value="#666"></label>
+      </div>
+      <button class="btn btn-primary" id="nc-add" style="margin-top:12px">Add category</button>
+    </div>
+  </div>`);
+
+  function drawTable() {
+    main.querySelector("#cat-table").innerHTML = `
+      <thead><tr><th>Label</th><th>Slug</th><th>Active</th><th></th></tr></thead>
+      <tbody>${DB.categories().map((c) => `
+        <tr>
+          <td><span class="dot" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${c.color};margin-right:6px"></span>
+            <input type="text" data-edit="${c.slug}" value="${esc(c.label)}" style="margin:0;width:auto;min-width:200px"></td>
+          <td class="muted">${esc(c.slug)}</td>
+          <td><button class="btn btn-sm ${c.is_active ? "btn-primary" : "btn-ghost"}" data-toggle="${c.slug}">${c.is_active ? "Active" : "Hidden"}</button></td>
+          <td><button class="btn btn-sm btn-ghost" data-save="${c.slug}">Save</button></td>
+        </tr>`).join("")}</tbody>`;
+    main.querySelectorAll("[data-toggle]").forEach((b) => b.onclick = () => {
+      const c = DB.categories().find((x) => x.slug === b.dataset.toggle);
+      DB.updateCategory(b.dataset.toggle, { is_active: !c.is_active }); drawTable();
+    });
+    main.querySelectorAll("[data-save]").forEach((b) => b.onclick = () => {
+      const input = main.querySelector(`[data-edit="${b.dataset.save}"]`);
+      DB.updateCategory(b.dataset.save, { label: input.value.trim() }); toast("Saved");
+    });
+  }
+  drawTable();
+
+  main.querySelector("#nc-add").onclick = () => {
+    const label = main.querySelector("#nc-label").value.trim();
+    if (!label) return toast("Enter a label.");
+    DB.addCategory({ label, icon: main.querySelector("#nc-icon").value.trim() || "📍", color: main.querySelector("#nc-color").value.trim() || "#666" });
+    main.querySelector("#nc-label").value = ""; main.querySelector("#nc-icon").value = "";
+    toast("Category added"); drawTable();
+  };
+
+  const view = el("<div></div>");
+  view.appendChild(adminShell("/admin/categories", main));
   return view;
 });
 

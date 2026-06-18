@@ -4,16 +4,29 @@
  * No backend required. See README.md for how this maps to the spec.
  * ============================================================ */
 
-/* ---------- Problem categories (the seven types from §4.3) ---------- */
-const CATEGORIES = [
-  { slug: "missing-sidewalk",     label: "Missing / incomplete sidewalk", color: "#e4572e", icon: "🚶" },
-  { slug: "unsafe-crossing",      label: "Unsafe street crossing",        color: "#d7263d", icon: "⚠️" },
-  { slug: "accessibility-barrier",label: "Accessibility barrier",         color: "#8e44ad", icon: "♿" },
-  { slug: "dangerous-junction",   label: "Dangerous junction",            color: "#c0392b", icon: "🚦" },
-  { slug: "poor-lighting",        label: "Poor street lighting",          color: "#2c6e91", icon: "💡" },
-  { slug: "lack-of-cycling",      label: "Lack of cycling infrastructure",color: "#1e824c", icon: "🚲" },
-  { slug: "footpath-obstruction", label: "Footpath obstruction",          color: "#d79b00", icon: "🚧" },
+/* ---------- Problem categories (defaults; editable by super admin) ---------- */
+const DEFAULT_CATEGORIES = [
+  { slug: "missing-sidewalk",     label: "Missing / incomplete sidewalk", color: "#e4572e", icon: "🚶", is_active: true },
+  { slug: "unsafe-crossing",      label: "Unsafe street crossing",        color: "#d7263d", icon: "⚠️", is_active: true },
+  { slug: "accessibility-barrier",label: "Accessibility barrier",         color: "#8e44ad", icon: "♿", is_active: true },
+  { slug: "dangerous-junction",   label: "Dangerous junction",            color: "#c0392b", icon: "🚦", is_active: true },
+  { slug: "poor-lighting",        label: "Poor street lighting",          color: "#2c6e91", icon: "💡", is_active: true },
+  { slug: "lack-of-cycling",      label: "Lack of cycling infrastructure",color: "#1e824c", icon: "🚲", is_active: true },
+  { slug: "footpath-obstruction", label: "Footpath obstruction",          color: "#d79b00", icon: "🚧", is_active: true },
+  { slug: "transit-stop-access",  label: "Transit stop access / condition",color: "#0984e3", icon: "🚉", is_active: true },
 ];
+
+/* ---------- Editable site content (managed in /admin/settings) ---------- */
+const DEFAULT_SETTINGS = {
+  site_name: "Street Doctor SG",
+  hero_title: "Map the street design problems Singapore lives with every day.",
+  hero_subtitle: "Report missing footpaths, unsafe crossings and accessibility barriers. We structure the evidence and hand it to STC to advocate with LTA and the authorities.",
+  hero_image: "",           // optional data URL / URL; empty = gradient only
+  stat_total_label: "Published cases",
+  stat_improved_label: "Improved",
+  stat_supporters_label: "Resident supports",
+  footer_blurb: "A civic street-audit platform by an NTU–NUS student team in collaboration with the Singapore Transport Collective (STC). Not an official government service.",
+};
 
 /* ---------- Case statuses (from issues.status check constraint, §7) ---------- */
 const STATUSES = {
@@ -56,6 +69,8 @@ const SEED_ISSUES = [
     affected_users: ["pedestrians", "elderly", "prams"],
     lng: 103.8721, lat: 1.3935,
     address_text: "Jalan Kayu, near Fernvale",
+    asset_type: "street",
+    geometry: [[103.8709, 1.3927], [103.8715, 1.3931], [103.8721, 1.3935], [103.8727, 1.3940], [103.8733, 1.3945]],
     status: "under_stc_review",
     support_count: 47,
     photos: [],
@@ -147,6 +162,27 @@ const SEED_ISSUES = [
     ],
   },
   {
+    id: "sd-1008",
+    category: "transit-stop-access",
+    title: "No sheltered, step-free route from Clementi MRT to bus stop",
+    description:
+      "Transferring from Clementi MRT to the feeder bus stop means an unsheltered detour with a flight of steps — hard for wheelchair users and miserable in the rain.",
+    affected_users: ["pedestrians", "wheelchair_users", "elderly", "prams"],
+    lng: 103.7652, lat: 1.3151,
+    address_text: "Clementi MRT (EW23)",
+    asset_type: "transit",
+    transit_ref: "Clementi",
+    status: "published",
+    support_count: 25,
+    photos: [],
+    created_at: "2026-06-09T08:00:00Z",
+    updated_at: "2026-06-10T08:00:00Z",
+    email: null,
+    status_history: [
+      { new_status: "published", note: "Published.", is_public: true, created_at: "2026-06-10T08:00:00Z" },
+    ],
+  },
+  {
     id: "sd-1006",
     category: "poor-lighting",
     title: "Dark connector path behind Bedok stadium",
@@ -191,12 +227,21 @@ const DB = (() => {
   function _load() {
     const raw = localStorage.getItem(KEY);
     if (raw) {
-      try { return JSON.parse(raw); } catch (e) { /* fall through to seed */ }
+      try {
+        const s = JSON.parse(raw);
+        // backfill fields added in later prototype versions
+        if (!s.categories) s.categories = structuredClone(DEFAULT_CATEGORIES);
+        if (!s.settings)   s.settings = structuredClone(DEFAULT_SETTINGS);
+        else s.settings = Object.assign(structuredClone(DEFAULT_SETTINGS), s.settings);
+        return s;
+      } catch (e) { /* fall through to seed */ }
     }
     const fresh = {
       issues: structuredClone(SEED_ISSUES),
       votes: {},      // issueId -> true (this browser supported it)  ~ §5.2 fingerprint check
       admin: false,   // logged-in flag
+      categories: structuredClone(DEFAULT_CATEGORIES),
+      settings: structuredClone(DEFAULT_SETTINGS),
     };
     localStorage.setItem(KEY, JSON.stringify(fresh));
     return fresh;
@@ -220,6 +265,9 @@ const DB = (() => {
       issue.status_history = [];
       issue.created_at = new Date().toISOString();
       issue.updated_at = issue.created_at;
+      issue.geometry = issue.geometry || null;        // optional highlighted road segment (LineString coords)
+      issue.asset_type = issue.asset_type || "street"; // "street" | "transit"
+      issue.transit_ref = issue.transit_ref || null;   // station name when asset_type === "transit"
       state.issues.unshift(issue);
       _save();
       return issue;
@@ -260,6 +308,26 @@ const DB = (() => {
       return true;
     },
 
+    /* ----- categories ----- */
+    categories() { return state.categories; },
+    activeCategories() { return state.categories.filter((c) => c.is_active); },
+    addCategory(cat) {
+      cat.slug = cat.slug || (cat.label || "category").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      if (state.categories.some((c) => c.slug === cat.slug)) cat.slug += "-" + Date.now().toString(36);
+      state.categories.push(Object.assign({ color: "#666", icon: "📍", is_active: true }, cat));
+      _save();
+      return cat;
+    },
+    updateCategory(slug, patch) {
+      const c = state.categories.find((x) => x.slug === slug);
+      if (c) { Object.assign(c, patch); _save(); }
+      return c;
+    },
+
+    /* ----- site settings ----- */
+    settings() { return state.settings; },
+    saveSettings(patch) { Object.assign(state.settings, patch); _save(); return state.settings; },
+
     /* ----- admin session ----- */
     isAdmin() { return !!state.admin; },
     login(pw) { if (pw === "stc-demo") { state.admin = true; _save(); return true; } return false; },
@@ -280,7 +348,8 @@ const DB = (() => {
 })();
 
 /* ---------- small lookup helpers ---------- */
-const catBySlug = (slug) => CATEGORIES.find((c) => c.slug === slug);
+const catBySlug = (slug) => DB.categories().find((c) => c.slug === slug);
+const transitById = (id) => TRANSIT_STATIONS.find((t) => t.id === id);
 const fmtDate = (iso) =>
   new Date(iso).toLocaleDateString("en-SG", { year: "numeric", month: "short", day: "numeric" });
 const fmtDateTime = (iso) =>

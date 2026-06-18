@@ -28,6 +28,21 @@ python3 -m http.server 8000
 | §2 Roles | Public vs. admin separation; `/admin/*` guarded by a login flag |
 | §11 Pages | About, FAQ, Privacy, Terms, Emergency |
 
+### v2 feature additions
+
+- **Road-segment highlighting** — on the map's report panel, "Highlight road segment" lets you
+  click a road; the app queries the live [Overpass API](https://overpass-api.de/) (OpenStreetMap),
+  detects the junction nodes around the click, and highlights just the junction-to-junction stretch.
+  Stored as a line geometry on the case and drawn on the map + detail page. Falls back to a pin if
+  Overpass is unreachable or the click isn't on a road.
+- **Transit-stop layer** — a toggleable MRT/LRT station layer ([`js/transit.js`](js/transit.js),
+  a curated subset). Click a station to file a report about that stop, pre-filled with its name and
+  the "Transit stop access / condition" category. Replace with LTA DataMall data in production.
+- **Inline reporting** — reporting happens in a slide-in drawer on the map itself; the map stays
+  live for picking the pin / segment / station. The standalone `/report` wizard remains as a fallback.
+- **Admin content editor** — `/admin/settings` edits the site name, hero text/image, stat labels and
+  footer blurb; `/admin/categories` edits/adds/hides problem categories. Public pages read these live.
+
 ## How it differs from the production spec (deliberately)
 
 - **Storage**: browser `localStorage` stands in for Supabase Postgres/PostGIS. See `DB` in
