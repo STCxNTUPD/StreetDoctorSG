@@ -256,9 +256,38 @@ function addMarker(map, issue, interactive = true) {
 
 /* ============================================================
  * Overpass road-segment lookup (junction-to-junction)
+ *
+ * A "junction" is defined by the road graph, not by raw OSM nodes:
+ * a node is a junction only where 3+ real road edges meet (a T or
+ * cross). Driveways, footpath taps, pedestrian crossings and tag-change
+ * splits are degree-2 (or excluded) and therefore do NOT fragment a
+ * segment. We query a corridor around the clicked road (not just a tiny
+ * radius) so every real cross-street along it is visible.
  * ============================================================ */
-const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
-const OVERPASS_HWY = "primary|secondary|tertiary|residential|unclassified|living_street|trunk|service|road|primary_link|secondary_link|tertiary_link|trunk_link|pedestrian|footway";
+// mirror endpoints tried in order (public instances rate-limit / time out)
+const OVERPASS_URLS = [
+  "https://overpass-api.de/api/interpreter",
+  "https://overpass.kumi.systems/api/interpreter",
+  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+];
+// real vehicular road classes that define junctions (excludes service/driveways, footway, path, cycleway…)
+const ROAD_CLASSES = new Set([
+  "motorway", "trunk", "primary", "secondary", "tertiary", "unclassified",
+  "residential", "living_street", "road",
+  "motorway_link", "trunk_link", "primary_link", "secondary_link", "tertiary_link",
+]);
+
+async function overpass(query) {
+  let lastErr;
+  for (const url of OVERPASS_URLS) {
+    try {
+      const res = await fetch(url, { method: "POST", body: "data=" + encodeURIComponent(query) });
+      if (res.ok) return res.json();
+      lastErr = new Error("Overpass " + res.status);
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error("Overpass unreachable");
+}
 
 function pointToSegDist(p, a, b) {
   const sx = Math.cos((p[1] * Math.PI) / 180);
@@ -270,43 +299,81 @@ function pointToSegDist(p, a, b) {
   return Math.hypot(px - cx, py - cy);
 }
 
-// Returns { coords:[[lng,lat]...], name } for the road segment between the two
-// junctions surrounding the click, or null. Throws on network failure.
+// Returns { coords:[[lng,lat]...], name } for the road stretch between the two
+// real junctions surrounding the click, or null. Throws on network failure.
 async function fetchRoadSegment(lng, lat) {
-  const q = `[out:json][timeout:25];way(around:35,${lat},${lng})[highway~"^(${OVERPASS_HWY})$"];(._;>;);out;`;
-  const res = await fetch(OVERPASS_URL, { method: "POST", body: "data=" + encodeURIComponent(q) });
-  if (!res.ok) throw new Error("Overpass " + res.status);
-  const data = await res.json();
+  const click = [lng, lat];
+
+  // One bounded query: all highways within ~180m of the click. Bounding by the
+  // click (not the whole road's bbox) keeps the query light and fast, and still
+  // reveals every cross-street near where the user tapped.
+  const data = await overpass(`[out:json][timeout:25];way(around:180,${lat},${lng})[highway];(._;>;);out;`);
   const nodes = {}, ways = [];
   for (const e of data.elements) {
     if (e.type === "node") nodes[e.id] = [e.lon, e.lat];
     else if (e.type === "way" && e.nodes) ways.push(e);
   }
   if (!ways.length) return null;
-  const usage = {};
-  for (const w of ways) for (const n of w.nodes) usage[n] = (usage[n] || 0) + 1;
-  const click = [lng, lat];
-  let best = null, bestD = Infinity, bestSeg = 0;
+
+  // nearest way to the click, preferring a real road within ~25m over footways/aisles
+  let wAny = null, wAnyD = Infinity, wAnySeg = 0, wRoad = null, wRoadD = Infinity, wRoadSeg = 0;
   for (const w of ways) {
-    const pts = w.nodes.map((n) => nodes[n]);
-    for (let i = 0; i < pts.length - 1; i++) {
-      if (!pts[i] || !pts[i + 1]) continue;
-      const d = pointToSegDist(click, pts[i], pts[i + 1]);
-      if (d < bestD) { bestD = d; best = w; bestSeg = i; }
+    const isRoad = w.tags && ROAD_CLASSES.has(w.tags.highway);
+    for (let i = 0; i < w.nodes.length - 1; i++) {
+      const a = nodes[w.nodes[i]], b = nodes[w.nodes[i + 1]];
+      if (!a || !b) continue;
+      const d = pointToSegDist(click, a, b);
+      if (d < wAnyD) { wAnyD = d; wAny = w; wAnySeg = i; }
+      if (isRoad && d < wRoadD) { wRoadD = d; wRoad = w; wRoadSeg = i; }
     }
   }
-  if (!best) return null;
-  const seq = best.nodes;
-  const isB = (idx) => idx === 0 || idx === seq.length - 1 || usage[seq[idx]] >= 2;
-  let lo = bestSeg; while (lo > 0 && !isB(lo)) lo--;
-  let hi = bestSeg + 1; while (hi < seq.length - 1 && !isB(hi)) hi++;
-  const coords = seq.slice(lo, hi + 1).map((n) => nodes[n]).filter(Boolean);
-  if (coords.length < 2) return null;
-  const name = (best.tags && (best.tags.name || best.tags.ref)) || null;
-  return { coords, name };
-}
+  const useRoad = wRoad && wRoadD < 25 / 111320;   // pointToSegDist is in degree-units; 25m ≈ 0.000225°
+  const clicked = useRoad ? wRoad : wAny;
+  const segIdx = useRoad ? wRoadSeg : wAnySeg;
+  if (!clicked) return null;
+  const clickedName = (clicked.tags && (clicked.tags.name || clicked.tags.ref)) || null;
 
-const segMidpoint = (coords) => coords[Math.floor(coords.length / 2)];
+  // Build the road graph from real road classes + the clicked way itself.
+  const graphWays = ways.filter((w) => (w.tags && ROAD_CLASSES.has(w.tags.highway)) || w.id === clicked.id);
+  const adj = {}; // node -> [{ to, wayId }]   (one entry per incident road edge-end)
+  for (const w of graphWays) {
+    for (let i = 0; i < w.nodes.length - 1; i++) {
+      const a = w.nodes[i], b = w.nodes[i + 1];
+      (adj[a] = adj[a] || []).push({ to: b, wayId: w.id });
+      (adj[b] = adj[b] || []).push({ to: a, wayId: w.id });
+    }
+  }
+  const degree = (n) => (adj[n] ? adj[n].length : 0);
+  const stop = (n) => degree(n) !== 2;  // junction (3+) or dead-end (1) terminates the stretch
+  const seq = clicked.nodes;
+  const wayName = (id) => { const w = ways.find((x) => x.id === id); return (w && w.tags && (w.tags.name || w.tags.ref)) || null; };
+
+  // walk outward from a node until a junction/dead-end; merges split ways (degree-2
+  // nodes) and caps each direction at ~300m so a long way with an out-of-range
+  // junction doesn't produce a runaway segment (use the chain feature for longer stretches)
+  const MAX_WALK_M = 300;
+  function walk(from, cameFrom) {
+    const path = [from], seen = new Set([cameFrom, from]);
+    let prev = cameFrom, cur = from, dist = 0;
+    while (!stop(cur)) {
+      const opts = (adj[cur] || []).filter((e) => e.to !== prev && !seen.has(e.to));
+      if (!opts.length) break;
+      let next = opts[0];
+      if (opts.length > 1) next = opts.find((e) => wayName(e.wayId) === clickedName) || opts[0];
+      const a = nodes[cur], b = nodes[next.to];
+      if (a && b) dist += haversine(a[1], a[0], b[1], b[0]);
+      if (dist > MAX_WALK_M) break;
+      path.push(next.to); seen.add(next.to); prev = cur; cur = next.to;
+    }
+    return path;
+  }
+  const back = walk(seq[segIdx], seq[segIdx + 1]);   // [startA … farBack]
+  const fwd  = walk(seq[segIdx + 1], seq[segIdx]);    // [startB … farFwd]
+  const ordered = back.slice().reverse().concat(fwd);
+  const coords = ordered.map((n) => nodes[n]).filter(Boolean);
+  if (coords.length < 2) return { coords: seq.map((n) => nodes[n]).filter(Boolean), name: clickedName };
+  return { coords, name: clickedName };
+}
 
 /* ============================================================
  * MAP  /map   (filters + transit layer + inline report drawer)
