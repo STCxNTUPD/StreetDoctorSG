@@ -441,6 +441,25 @@ route(/^\/map(?:\?.*)?$/, function mapPage() {
     let panel = null;            // report panel api when open
     let mode = "point";          // "point" | "segment"
     let pinMarker = null;
+    let hoveredSeg = null;       // road-network feature id currently hovered
+    let roadnetLoaded = false;
+
+    // Lazily load the pre-generated junction-to-junction road network (pilot file
+    // now; whole-island PMTiles later). Used for instant hover/select.
+    function loadRoadnet() {
+      if (roadnetLoaded) return;
+      roadnetLoaded = true;
+      fetch("data/pilot-roads.geojson")
+        .then((r) => r.json())
+        .then((gj) => { const s = map.getSource("roadnet"); if (s) s.setData(gj); })
+        .catch(() => { roadnetLoaded = false; });
+    }
+    // show the interactive road layer only while picking segments and zoomed in enough
+    function updateRoadnetVis() {
+      const on = mode === "segment" && drawer.classList.contains("open") && map.getZoom() >= 15;
+      const v = on ? "visible" : "none";
+      ["roadnet-line", "roadnet-hit"].forEach((id) => map.getLayer(id) && map.setLayoutProperty(id, "visibility", v));
+    }
 
     function draw() {
       issueMarkers.forEach((m) => m.remove());
@@ -466,8 +485,44 @@ route(/^\/map(?:\?.*)?$/, function mapPage() {
       map.addLayer({ id: "issue-segs", type: "line", source: "issue-segs",
         paint: { "line-color": ["get", "color"], "line-width": 5, "line-opacity": 0.55 } });
       map.addSource("report-seg", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+
+      // road-network layer for hover-preview (grey) + selectable hit area.
+      // promoteId makes feature.id === segment_id for feature-state.
+      map.addSource("roadnet", { type: "geojson", data: { type: "FeatureCollection", features: [] }, promoteId: "segment_id" });
+      map.addLayer({ id: "roadnet-line", type: "line", source: "roadnet",
+        layout: { visibility: "none", "line-cap": "round" },
+        paint: {
+          "line-color": ["case", ["boolean", ["feature-state", "hover"], false], "#6b7280", "#aab2bb"],
+          "line-width": ["case", ["boolean", ["feature-state", "hover"], false], 6, 3],
+          "line-opacity": ["case", ["boolean", ["feature-state", "hover"], false], 0.95, 0.35],
+        } });
+      map.addLayer({ id: "roadnet-hit", type: "line", source: "roadnet",
+        layout: { visibility: "none" },
+        paint: { "line-color": "#000", "line-opacity": 0.01, "line-width": 18 } });
+
+      // the selected chain (red) is drawn on top via report-seg
       map.addLayer({ id: "report-seg", type: "line", source: "report-seg",
         paint: { "line-color": "#e4572e", "line-width": 6, "line-opacity": 0.9 } });
+
+      map.on("mousemove", "roadnet-hit", (e) => {
+        if (mode !== "segment" || !e.features.length) return;
+        if (hoveredSeg !== null) map.setFeatureState({ source: "roadnet", id: hoveredSeg }, { hover: false });
+        hoveredSeg = e.features[0].id;
+        map.setFeatureState({ source: "roadnet", id: hoveredSeg }, { hover: true });
+        map.getCanvas().style.cursor = "pointer";
+      });
+      map.on("mouseleave", "roadnet-hit", () => {
+        if (hoveredSeg !== null) map.setFeatureState({ source: "roadnet", id: hoveredSeg }, { hover: false });
+        hoveredSeg = null;
+        if (mode === "segment") map.getCanvas().style.cursor = "crosshair";
+      });
+      map.on("click", "roadnet-hit", (e) => {
+        if (mode !== "segment" || !drawer.classList.contains("open") || !e.features.length) return;
+        e.originalEvent._handledRoadnet = true;   // stop the generic Overpass click below
+        const f = e.features[0];
+        panel && panel.handleSegmentClick({ coords: f.geometry.coordinates, name: f.properties.name || null });
+      });
+      map.on("zoomend", updateRoadnetVis);
 
       // transit stations layer (hidden until toggled)
       map.addSource("transit", { type: "geojson", data: {
@@ -499,9 +554,9 @@ route(/^\/map(?:\?.*)?$/, function mapPage() {
     // map click → set point or fetch segment (only while drawer open)
     map.on("click", async (e) => {
       if (!drawer.classList.contains("open")) return;
-      if (e.originalEvent && e.originalEvent._handledTransit) return;
+      if (e.originalEvent && (e.originalEvent._handledTransit || e.originalEvent._handledRoadnet)) return;
       if (mode === "segment") {
-        // stay in segment mode; the panel owns the chain + connectivity logic
+        // not on a pre-loaded road segment → fall back to live Overpass lookup
         panel && panel.segmentLoading();
         try {
           const seg = await fetchRoadSegment(e.lngLat.lng, e.lngLat.lat);
@@ -529,6 +584,8 @@ route(/^\/map(?:\?.*)?$/, function mapPage() {
     function setMode(m) {
       mode = m;
       map.getCanvas().style.cursor = m === "segment" ? "crosshair" : "";
+      if (m === "segment") loadRoadnet();
+      updateRoadnetVis();
       panel && panel.reflectMode(m);
     }
 
@@ -599,7 +656,7 @@ function mountReportPanel(container, rep, hooks) {
         <button class="btn btn-ghost btn-sm seg-toggle" id="seg-toggle">🛣️ Select road segment(s)</button>
       </div>
       <div class="seg-tools hidden" id="seg-tools" style="margin-top:8px">
-        <div class="loc-hint" id="seg-hint">Click connected road segments to extend the selection; click a highlighted one to remove it. Drag the pin to fine-tune the marker.</div>
+        <div class="loc-hint" id="seg-hint">Zoom in and hover a road — it previews in grey. Click to select (turns red); click connected roads to extend, or a red one to remove. Drag the pin to fine-tune.</div>
         <div class="row" style="gap:8px;align-items:center;margin-top:8px">
           <button class="btn btn-ghost btn-sm" id="seg-undo">↶ Undo last</button>
           <button class="btn btn-ghost btn-sm" id="seg-clear">Clear</button>
