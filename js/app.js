@@ -18,11 +18,28 @@ function toast(msg) {
 }
 
 const SG_CENTER = [103.8198, 1.3521];
-const OSM_STYLE = {
+
+// Basemap — CARTO raster tiles (no API key, English labels, retina @2x).
+// "voyager"  = clean but informative (roads, parks, transit) — the default
+// "positron" = most minimal / data-first (very light grey)
+// "darkmatter"= dark theme
+// To switch the look, change BASEMAP to one of the keys below.
+const BASEMAP = "voyager";
+const BASEMAP_PATHS = { voyager: "rastertiles/voyager", positron: "light_all", darkmatter: "dark_all" };
+const MAP_STYLE = {
   version: 8,
   glyphs: "https://fonts.openmaptiles.org/{fontstack}/{range}.pbf",
-  sources: { osm: { type: "raster", tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"], tileSize: 256, attribution: "© OpenStreetMap contributors" } },
-  layers: [{ id: "osm", type: "raster", source: "osm" }],
+  sources: {
+    base: {
+      type: "raster",
+      tiles: ["a", "b", "c", "d"].map(
+        (s) => `https://${s}.basemaps.cartocdn.com/${BASEMAP_PATHS[BASEMAP]}/{z}/{x}/{y}@2x.png`
+      ),
+      tileSize: 256,
+      attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>',
+    },
+  },
+  layers: [{ id: "base", type: "raster", source: "base" }],
 };
 
 function statusBadge(status) {
@@ -225,7 +242,7 @@ route(/^\/$/, function home() {
   view.querySelector("#home-disclaimer").appendChild(disclaimerBanner());
 
   setTimeout(() => {
-    const map = new maplibregl.Map({ container: "mini-map", style: OSM_STYLE, center: SG_CENTER, zoom: 10.6, attributionControl: false });
+    const map = new maplibregl.Map({ container: "mini-map", style: MAP_STYLE, center: SG_CENTER, zoom: 10.6, attributionControl: false });
     map.addControl(new maplibregl.AttributionControl({ compact: true }));
     map.on("load", () => DB.publicIssues().forEach((i) => addMarker(map, i, false)));
     map.scrollZoom.disable();
@@ -415,7 +432,7 @@ route(/^\/map(?:\?.*)?$/, function mapPage() {
   const view = pageShell(wrapEl);
 
   setTimeout(() => {
-    const map = new maplibregl.Map({ container: "map", style: OSM_STYLE, center: SG_CENTER, zoom: 11.2 });
+    const map = new maplibregl.Map({ container: "map", style: MAP_STYLE, center: SG_CENTER, zoom: 11.2 });
     map.addControl(new maplibregl.NavigationControl(), "bottom-right");
     map.addControl(new maplibregl.GeolocateControl({ positionOptions: { enableHighAccuracy: true }, trackUserLocation: false }), "bottom-right");
 
@@ -856,7 +873,7 @@ function renderStep(step, d, onChange, nav) {
     const coords = el(`<p class="help" id="coord-label">${d.lat ? `📍 ${d.lat.toFixed(5)}, ${d.lng.toFixed(5)}` : "No location selected yet."}</p>`);
     body.appendChild(coords);
     setTimeout(() => {
-      const map = new maplibregl.Map({ container: "report-map", style: OSM_STYLE, center: d.lng ? [d.lng, d.lat] : SG_CENTER, zoom: d.lng ? 16 : 11 });
+      const map = new maplibregl.Map({ container: "report-map", style: MAP_STYLE, center: d.lng ? [d.lng, d.lat] : SG_CENTER, zoom: d.lng ? 16 : 11 });
       map.addControl(new maplibregl.NavigationControl(), "top-right");
       let marker = null;
       function place(lng, lat) {
@@ -1108,7 +1125,7 @@ route(/^\/issues\/([\w-]+)$/, function issueDetail(id) {
   };
 
   setTimeout(() => {
-    const map = new maplibregl.Map({ container: "detail-map", style: OSM_STYLE, center: [issue.lng, issue.lat], zoom: 15, interactive: true, attributionControl: false });
+    const map = new maplibregl.Map({ container: "detail-map", style: MAP_STYLE, center: [issue.lng, issue.lat], zoom: 15, interactive: true, attributionControl: false });
     new maplibregl.Marker({ color: cat?.color || "#e4572e" }).setLngLat([issue.lng, issue.lat]).addTo(map);
     const segs = normalizeGeom(issue.geometry);
     if (segs.length) {
@@ -1491,7 +1508,7 @@ route(/^\/admin\/issues\/([\w-]+)$/, function adminIssueEdit(id) {
   };
 
   setTimeout(() => {
-    const map = new maplibregl.Map({ container: "edit-map", style: OSM_STYLE, center: [issue.lng, issue.lat], zoom: 15 });
+    const map = new maplibregl.Map({ container: "edit-map", style: MAP_STYLE, center: [issue.lng, issue.lat], zoom: 15 });
     map.addControl(new maplibregl.NavigationControl(), "top-right");
     const marker = new maplibregl.Marker({ color: "#e4572e", draggable: true }).setLngLat([issue.lng, issue.lat]).addTo(map);
     marker.on("dragend", () => { const p = marker.getLngLat(); form.querySelector("#e-lat").value = p.lat.toFixed(6); form.querySelector("#e-lng").value = p.lng.toFixed(6); });
