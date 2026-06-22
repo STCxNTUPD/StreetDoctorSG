@@ -1,7 +1,8 @@
 /* ============================================================
- * Street Doctor SG — prototype data layer
- * Constants, seed data, and a tiny localStorage-backed "database".
- * No backend required. See README.md for how this maps to the spec.
+ * Street Doctor SG — data layer
+ * Constants + a DB facade backed by Supabase (see js/supabase.js).
+ * Issues / comments / votes / flags live in Supabase and are cached
+ * in memory; categories & site settings stay client-side for now.
  * ============================================================ */
 
 /* ---------- Problem categories (defaults; editable by super admin) ---------- */
@@ -72,268 +73,111 @@ const FLAG_REASONS = [
 ];
 const flagReasonLabel = (id) => FLAG_REASONS.find((r) => r.id === id)?.label || id;
 
-/* ---------- Seed cases (a few realistic Singapore locations) ---------- */
-const SEED_ISSUES = [
-  {
-    id: "sd-1001",
-    category: "missing-sidewalk",
-    title: "No footpath along Jalan Kayu before MRT",
-    description:
-      "A 200m stretch on Jalan Kayu has no continuous footpath, forcing pedestrians onto the road shoulder during peak hours. Especially dangerous near the bus stop.",
-    affected_users: ["pedestrians", "elderly", "prams"],
-    lng: 103.8721, lat: 1.3935,
-    address_text: "Jalan Kayu, near Fernvale",
-    asset_type: "street",
-    geometry: [[[103.8709, 1.3927], [103.8715, 1.3931], [103.8721, 1.3935], [103.8727, 1.3940], [103.8733, 1.3945]]],
-    status: "under_stc_review",
-    support_count: 47,
-    photos: [],
-    created_at: "2026-05-02T09:12:00Z",
-    updated_at: "2026-05-20T10:00:00Z",
-    email: "resident@example.com",
-    status_history: [
-      { new_status: "published",        note: "Case published after review.", is_public: true, created_at: "2026-05-03T08:00:00Z" },
-      { new_status: "under_stc_review", note: "STC is compiling this into the North-East walkability brief.", is_public: true, created_at: "2026-05-20T10:00:00Z" },
-    ],
-  },
-  {
-    id: "sd-1002",
-    category: "unsafe-crossing",
-    title: "Long wait, no refuge island at Serangoon junction",
-    description:
-      "The signalised crossing gives only 12 seconds of green for a 4-lane road and has no central refuge. Elderly residents regularly get stranded mid-crossing.",
-    affected_users: ["pedestrians", "elderly", "wheelchair_users"],
-    lng: 103.8736, lat: 1.3496,
-    address_text: "Serangoon Central",
-    status: "referred_to_official_channel",
-    support_count: 88,
-    photos: [],
-    created_at: "2026-04-18T14:30:00Z",
-    updated_at: "2026-06-01T09:00:00Z",
-    email: null,
-    status_history: [
-      { new_status: "published",                    note: "Published.", is_public: true, created_at: "2026-04-19T08:00:00Z" },
-      { new_status: "referred_to_official_channel", note: "Raised with LTA via STC's quarterly submission (ref Q2-2026).", is_public: true, created_at: "2026-06-01T09:00:00Z" },
-    ],
-  },
-  {
-    id: "sd-1003",
-    category: "accessibility-barrier",
-    title: "Kerb ramp missing at Tiong Bahru market",
-    description:
-      "The north entrance has a 12cm kerb with no ramp, making it impossible for wheelchair users and difficult for trolleys.",
-    affected_users: ["wheelchair_users", "elderly", "prams"],
-    lng: 103.8316, lat: 1.2853,
-    address_text: "Tiong Bahru Market",
-    status: "improved",
-    support_count: 31,
-    photos: [],
-    created_at: "2026-02-10T11:00:00Z",
-    updated_at: "2026-05-28T16:00:00Z",
-    email: null,
-    status_history: [
-      { new_status: "published",               note: "Published.", is_public: true, created_at: "2026-02-11T08:00:00Z" },
-      { new_status: "improvement_in_progress", note: "Town council scheduled kerb works.", is_public: true, created_at: "2026-04-02T08:00:00Z" },
-      { new_status: "improved",                note: "Ramp installed and verified on site. Thanks to everyone who supported.", is_public: true, created_at: "2026-05-28T16:00:00Z" },
-    ],
-  },
-  {
-    id: "sd-1004",
-    category: "dangerous-junction",
-    title: "Blind left-turn slip road at Clementi",
-    description:
-      "Vehicles taking the slip road don't slow down and sightlines are blocked by the railing and planting. Several near-misses with pedestrians crossing to the MRT.",
-    affected_users: ["pedestrians", "cyclists"],
-    lng: 103.7651, lat: 1.3151,
-    address_text: "Clementi Ave 3 / Commonwealth Ave West",
-    status: "published",
-    support_count: 19,
-    photos: [],
-    created_at: "2026-06-05T08:00:00Z",
-    updated_at: "2026-06-06T08:00:00Z",
-    email: null,
-    status_history: [
-      { new_status: "published", note: "Published.", is_public: true, created_at: "2026-06-06T08:00:00Z" },
-    ],
-  },
-  {
-    id: "sd-1005",
-    category: "footpath-obstruction",
-    title: "Bin centre blocks footpath at Toa Payoh",
-    description:
-      "An overflowing bin centre routinely spills onto the only footpath, narrowing it to under 0.5m. Wheelchair users have to go onto the carriageway.",
-    affected_users: ["pedestrians", "wheelchair_users", "visually_impaired"],
-    lng: 103.8470, lat: 1.3329,
-    address_text: "Toa Payoh Lorong 4",
-    status: "published",
-    support_count: 8,
-    photos: [],
-    created_at: "2026-06-11T19:00:00Z",
-    updated_at: "2026-06-12T08:00:00Z",
-    email: "watcher@example.com",
-    status_history: [
-      { new_status: "published", note: "Published.", is_public: true, created_at: "2026-06-12T08:00:00Z" },
-    ],
-  },
-  {
-    id: "sd-1008",
-    category: "transit-stop-access",
-    title: "No sheltered, step-free route from Clementi MRT to bus stop",
-    description:
-      "Transferring from Clementi MRT to the feeder bus stop means an unsheltered detour with a flight of steps — hard for wheelchair users and miserable in the rain.",
-    affected_users: ["pedestrians", "wheelchair_users", "elderly", "prams"],
-    lng: 103.7652, lat: 1.3151,
-    address_text: "Clementi MRT (EW23)",
-    asset_type: "transit",
-    transit_ref: "Clementi",
-    status: "published",
-    support_count: 25,
-    photos: [],
-    created_at: "2026-06-09T08:00:00Z",
-    updated_at: "2026-06-10T08:00:00Z",
-    email: null,
-    status_history: [
-      { new_status: "published", note: "Published.", is_public: true, created_at: "2026-06-10T08:00:00Z" },
-    ],
-  },
-  {
-    id: "sd-1006",
-    category: "poor-lighting",
-    title: "Dark connector path behind Bedok stadium",
-    description:
-      "The park connector between the stadium and the HDB blocks has several non-functioning lamps, making it unsafe to walk after dusk.",
-    affected_users: ["pedestrians", "cyclists"],
-    lng: 103.9305, lat: 1.3266,
-    address_text: "Bedok Park Connector",
-    status: "published",
-    support_count: 4,
-    photos: [],
-    created_at: "2026-06-17T21:30:00Z",
-    updated_at: "2026-06-17T21:30:00Z",
-    email: "night.walker@example.com",
-    status_history: [
-      { new_status: "published", note: "Auto-published on submission.", is_public: true, created_at: "2026-06-17T21:30:00Z" },
-    ],
-  },
-  {
-    id: "sd-1007",
-    category: "lack-of-cycling",
-    title: "Cycling lane ends abruptly at Jurong East",
-    description:
-      "The painted cycling lane simply stops 80m before the junction, dumping cyclists into fast traffic with no transition.",
-    affected_users: ["cyclists"],
-    lng: 103.7420, lat: 1.3331,
-    address_text: "Jurong East Central",
-    status: "published",
-    support_count: 2,
-    photos: [],
-    created_at: "2026-06-18T07:10:00Z",
-    updated_at: "2026-06-18T07:10:00Z",
-    email: null,
-    status_history: [
-      { new_status: "published", note: "Auto-published on submission.", is_public: true, created_at: "2026-06-18T07:10:00Z" },
-    ],
-  },
-];
-
-/* ---------- Seed community flags (demo the moderation queue) ---------- */
-const SEED_FLAGS = [
-  {
-    id: "fl-2001",
-    issue_id: "sd-1005",
-    reason: "wrong_location",
-    detail: "I walk here daily — the bin centre is one block north, not at this pin.",
-    status: "open",
-    created_at: "2026-06-19T03:00:00Z",
-  },
-];
-
-/* ---------- Seed comments (public discussion on a case) ---------- */
-const SEED_COMMENTS = [
-  { id: "cm-3001", issue_id: "sd-1002", name: "Mdm Tan", body: "My mother nearly got stranded here last week. The green light is far too short.", created_at: "2026-04-20T02:30:00Z" },
-  { id: "cm-3002", issue_id: "sd-1002", name: "Daniel", body: "A central refuge island would make a huge difference. Supporting this.", created_at: "2026-04-22T09:05:00Z" },
-];
-
 /* ============================================================
- * DB: a thin wrapper over localStorage that mimics the tables.
+ * DB: in-memory cache backed by Supabase.
+ *  - issues / comments / votes / flags  -> Supabase (shared by everyone)
+ *  - categories / site settings         -> localStorage (client-side, not shared yet)
+ * Reads are synchronous from the cache. Writes update the cache immediately
+ * (optimistic) and persist to Supabase in the background, rolling back on error.
+ * Call `await DB.load()` once at startup (and on auth change) before rendering.
  * ============================================================ */
 const DB = (() => {
-  const KEY = "streetdoctor_sg_v1";
+  const cache = { issues: [], comments: [], votes: new Set(), flagged: new Set(), flags: [] };
 
-  function _load() {
-    const raw = localStorage.getItem(KEY);
-    if (raw) {
-      try {
-        const s = JSON.parse(raw);
-        // backfill fields added in later prototype versions
-        if (!s.categories) s.categories = structuredClone(DEFAULT_CATEGORIES);
-        if (!s.settings)   s.settings = structuredClone(DEFAULT_SETTINGS);
-        else s.settings = Object.assign(structuredClone(DEFAULT_SETTINGS), s.settings);
-        if (!s.flags)    s.flags = [];     // community moderation reports
-        if (!s.flagged)  s.flagged = {};   // issueId -> true (this browser flagged it)
-        if (!s.comments) s.comments = [];  // public discussion threads
-        // Moderation gate removed: anything that was awaiting moderation is now
-        // auto-published, matching the new "publish first, flag if wrong" model.
-        s.issues.forEach((i) => {
-          if (i.status === "pending_moderation") {
-            i.status = "published";
-            (i.status_history = i.status_history || []).push({
-              new_status: "published", note: "Auto-published (moderation step removed).",
-              is_public: true, created_at: new Date().toISOString(),
-            });
-          }
-        });
-        localStorage.setItem(KEY, JSON.stringify(s));
-        return s;
-      } catch (e) { /* fall through to seed */ }
+  // ----- client-side config: categories + site settings (not shared yet) -----
+  const CFG_KEY = "streetdoctor_cfg_v1";
+  function loadCfg() {
+    try {
+      const s = JSON.parse(localStorage.getItem(CFG_KEY)) || {};
+      return {
+        categories: s.categories || structuredClone(DEFAULT_CATEGORIES),
+        settings: Object.assign(structuredClone(DEFAULT_SETTINGS), s.settings || {}),
+      };
+    } catch (e) {
+      return { categories: structuredClone(DEFAULT_CATEGORIES), settings: structuredClone(DEFAULT_SETTINGS) };
     }
-    const fresh = {
-      issues: structuredClone(SEED_ISSUES),
-      votes: {},      // issueId -> true (this browser supported it)  ~ §5.2 fingerprint check
-      flags: structuredClone(SEED_FLAGS),  // community moderation reports
-      flagged: {},    // issueId -> true (this browser flagged it)   ~ dedupe like votes
-      comments: structuredClone(SEED_COMMENTS),  // public discussion threads
-      admin: false,   // logged-in flag
-      categories: structuredClone(DEFAULT_CATEGORIES),
-      settings: structuredClone(DEFAULT_SETTINGS),
-    };
-    localStorage.setItem(KEY, JSON.stringify(fresh));
-    return fresh;
+  }
+  let cfg = loadCfg();
+  const saveCfg = () => localStorage.setItem(CFG_KEY, JSON.stringify(cfg));
+
+  // ----- background persistence: run a Supabase write, roll back the cache on failure -----
+  function persist(promise, rollback) {
+    Promise.resolve(promise).then(({ error }) => {
+      if (error) {
+        console.error("Supabase write failed:", error);
+        if (typeof toast === "function") toast("Couldn't save: " + (error.message || "network error"));
+        if (rollback) rollback();
+        if (typeof render === "function") render();
+      }
+    });
   }
 
-  let state = _load();
-  function _save() { localStorage.setItem(KEY, JSON.stringify(state)); }
-
   return {
-    /* ----- issues ----- */
-    allIssues() { return state.issues; },
-    publicIssues() {
-      return state.issues.filter((i) => STATUSES[i.status]?.public);
+    /* ----- load everything into the cache (startup + on auth change) ----- */
+    async load() {
+      const uid = (typeof Session !== "undefined" && Session.user) ? Session.user.id : null;
+      const [issuesRes, historyRes, commentsRes] = await Promise.all([
+        SB.from("issues").select("*").order("created_at", { ascending: false }),
+        SB.from("status_history").select("*").order("created_at", { ascending: true }),
+        SB.from("comments").select("*").order("created_at", { ascending: true }),
+      ]);
+      const issues = (issuesRes.data || []).map((i) => ({ ...i, status_history: [] }));
+      const byId = Object.fromEntries(issues.map((i) => [i.id, i]));
+      (historyRes.data || []).forEach((h) => { const it = byId[h.issue_id]; if (it) it.status_history.push(h); });
+      cache.issues = issues;
+      cache.comments = (commentsRes.data || []).map((c) => ({ ...c, name: c.author_name || "Anonymous" }));
+
+      cache.votes = new Set();
+      cache.flagged = new Set();
+      cache.flags = [];
+      if (uid) {
+        const [v, mf] = await Promise.all([
+          SB.from("votes").select("issue_id").eq("user_id", uid),
+          SB.from("flags").select("issue_id").eq("user_id", uid),
+        ]);
+        cache.votes = new Set((v.data || []).map((x) => x.issue_id));
+        cache.flagged = new Set((mf.data || []).map((x) => x.issue_id));
+      }
+      if (typeof Session !== "undefined" && Session.profile && Session.profile.role === "moderator") {
+        const f = await SB.from("flags").select("*").eq("status", "open");
+        cache.flags = f.data || [];
+      }
     },
-    getIssue(id) { return state.issues.find((i) => i.id === id) || null; },
+    reload() { return this.load(); },
+
+    /* ----- issues ----- */
+    allIssues() { return cache.issues; },
+    publicIssues() { return cache.issues.filter((i) => STATUSES[i.status]?.public); },
+    getIssue(id) { return cache.issues.find((i) => i.id === id) || null; },
 
     addIssue(issue) {
-      issue.id = "sd-" + Date.now();
-      issue.status = "published";        // auto-publish: live on the map immediately
-      issue.support_count = 0;
-      issue.created_at = new Date().toISOString();
-      issue.updated_at = issue.created_at;
-      issue.status_history = [
-        { new_status: "published", note: "Auto-published on submission.", is_public: true, created_at: issue.created_at },
-      ];
-      issue.geometry = issue.geometry || null;        // optional highlighted road segment (LineString coords)
-      issue.asset_type = issue.asset_type || "street"; // "street" | "transit"
-      issue.transit_ref = issue.transit_ref || null;   // station name when asset_type === "transit"
-      state.issues.unshift(issue);
-      _save();
-      return issue;
+      if (!Session.user) { toast("Please log in to report an issue."); return null; }
+      const now = new Date().toISOString();
+      const row = {
+        id: crypto.randomUUID(),
+        user_id: Session.user.id,
+        category: issue.category, title: issue.title, description: issue.description,
+        affected_users: issue.affected_users || [],
+        lng: issue.lng, lat: issue.lat, address_text: issue.address_text || null,
+        asset_type: issue.asset_type || "street", transit_ref: issue.transit_ref || null,
+        geometry: issue.geometry || null, photos: issue.photos || [], email: issue.email || null,
+        status: "published", support_count: 0, created_at: now, updated_at: now,
+        status_history: [{ new_status: "published", note: "Auto-published on submission.", is_public: true, created_at: now }],
+      };
+      cache.issues.unshift(row);
+      const { status_history, ...dbRow } = row;
+      // The initial "published" history row is created server-side by the
+      // issues_initial_history trigger (a normal user can't write history via RLS).
+      persist(SB.from("issues").insert(dbRow), () => { cache.issues = cache.issues.filter((i) => i.id !== row.id); });
+      return row;
     },
 
     updateIssue(id, patch) {
       const it = this.getIssue(id);
       if (!it) return null;
       Object.assign(it, patch, { updated_at: new Date().toISOString() });
-      _save();
+      const { status_history, ...dbPatch } = patch;
+      persist(SB.from("issues").update({ ...dbPatch, updated_at: it.updated_at }).eq("id", id));
       return it;
     },
 
@@ -343,48 +187,51 @@ const DB = (() => {
       const old = it.status;
       it.status = newStatus;
       it.updated_at = new Date().toISOString();
-      it.status_history.push({
-        old_status: old, new_status: newStatus,
-        note: note || "", is_public: isPublic !== false,
-        created_at: it.updated_at,
-      });
-      _save();
+      const h = { old_status: old, new_status: newStatus, note: note || "", is_public: isPublic !== false, created_at: it.updated_at };
+      it.status_history.push(h);
+      persist(SB.from("issues").update({ status: newStatus, updated_at: it.updated_at }).eq("id", id));
+      persist(SB.from("status_history").insert({ issue_id: id, old_status: old, new_status: newStatus, note: h.note, is_public: h.is_public }));
       return it;
     },
 
     /* ----- votes (support) ----- */
-    hasVoted(id) { return !!state.votes[id]; },
+    hasVoted(id) { return cache.votes.has(id); },
     vote(id) {
-      if (state.votes[id]) return false;       // dedupe, mimics unique(issue_id, fingerprint)
+      if (!Session.user) { toast("Please log in to support a case."); return false; }
+      if (cache.votes.has(id)) return false;
       const it = this.getIssue(id);
-      if (!it || it.status !== "published" && !STATUSES[it.status]?.public) return false;
-      state.votes[id] = true;
+      if (!it || !STATUSES[it.status]?.public) return false;
+      cache.votes.add(id);
       it.support_count = (it.support_count || 0) + 1;
-      _save();
+      persist(
+        SB.from("votes").insert({ issue_id: id, user_id: Session.user.id }),
+        () => { cache.votes.delete(id); it.support_count = Math.max((it.support_count || 1) - 1, 0); }
+      );
       return true;
     },
 
-    /* ----- flags (community moderation: anyone can report a bad case) ----- */
-    hasFlagged(id) { return !!state.flagged[id]; },
+    /* ----- flags (community moderation: any logged-in user can report a bad case) ----- */
+    hasFlagged(id) { return cache.flagged.has(id); },
     flagIssue(id, reason, detail) {
+      if (!Session.user) { toast("Please log in to report a problem."); return null; }
+      if (cache.flagged.has(id)) return null;
       const it = this.getIssue(id);
-      if (!it || !STATUSES[it.status]?.public) return null;   // can't flag a non-public case
-      if (state.flagged[id]) return null;                     // one report per browser per case
+      if (!it || !STATUSES[it.status]?.public) return null;
       const flag = {
-        id: "fl-" + Date.now(),
-        issue_id: id,
-        reason: reason || "other",
-        detail: (detail || "").trim(),
-        status: "open",                                       // open | dismissed | upheld
+        id: crypto.randomUUID(), issue_id: id, user_id: Session.user.id,
+        reason: reason || "other", detail: (detail || "").trim(), status: "open",
         created_at: new Date().toISOString(),
       };
-      state.flags.push(flag);
-      state.flagged[id] = true;
-      _save();
+      cache.flagged.add(id);
+      if (DB.isAdmin()) cache.flags.push(flag);
+      persist(
+        SB.from("flags").insert({ id: flag.id, issue_id: id, user_id: Session.user.id, reason: flag.reason, detail: flag.detail }),
+        () => { cache.flagged.delete(id); cache.flags = cache.flags.filter((f) => f.id !== flag.id); }
+      );
       return flag;
     },
-    openFlags() { return state.flags.filter((f) => f.status === "open"); },
-    flagsForIssue(id) { return state.flags.filter((f) => f.issue_id === id && f.status === "open"); },
+    openFlags() { return cache.flags.filter((f) => f.status === "open"); },
+    flagsForIssue(id) { return cache.flags.filter((f) => f.issue_id === id && f.status === "open"); },
     flaggedIssues() {
       const ids = [...new Set(this.openFlags().map((f) => f.issue_id))];
       return ids.map((id) => this.getIssue(id)).filter(Boolean);
@@ -393,40 +240,42 @@ const DB = (() => {
     clearFlags(issueId, status) {
       let n = 0;
       const now = new Date().toISOString();
-      state.flags.forEach((f) => {
-        if (f.issue_id === issueId && f.status === "open") { f.status = status; f.resolved_at = now; n++; }
-      });
-      if (n) _save();
+      cache.flags.forEach((f) => { if (f.issue_id === issueId && f.status === "open") { f.status = status; f.resolved_at = now; n++; } });
+      if (n) persist(SB.from("flags").update({ status, resolved_at: now }).eq("issue_id", issueId).eq("status", "open"));
       return n;
     },
 
     /* ----- comments (public discussion on a case) ----- */
     commentsForIssue(id) {
-      return state.comments
+      return cache.comments
         .filter((c) => c.issue_id === id)
         .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));   // oldest first
     },
     addComment(id, name, body) {
+      if (!Session.user) { toast("Please log in to comment."); return null; }
       const text = (body || "").trim();
       if (!text) return null;
       const it = this.getIssue(id);
-      if (!it || !STATUSES[it.status]?.public) return null;   // only on public cases
-      const comment = {
-        id: "cm-" + Date.now(),
-        issue_id: id,
-        name: (name || "").trim().slice(0, 60) || "Anonymous",
-        body: text.slice(0, 1000),
+      if (!it || !STATUSES[it.status]?.public) return null;
+      const authorName = Auth.displayName();
+      const c = {
+        id: crypto.randomUUID(), issue_id: id, user_id: Session.user.id,
+        author_name: authorName, name: authorName, body: text.slice(0, 1000),
         created_at: new Date().toISOString(),
       };
-      state.comments.push(comment);
-      _save();
-      return comment;
+      cache.comments.push(c);
+      persist(
+        SB.from("comments").insert({ id: c.id, issue_id: id, user_id: Session.user.id, author_name: authorName, body: c.body }),
+        () => { cache.comments = cache.comments.filter((x) => x.id !== c.id); }
+      );
+      return c;
     },
     deleteComment(commentId) {
-      const i = state.comments.findIndex((c) => c.id === commentId);
+      const i = cache.comments.findIndex((c) => c.id === commentId);
       if (i < 0) return false;
-      state.comments.splice(i, 1);
-      _save();
+      const removed = cache.comments[i];
+      cache.comments.splice(i, 1);
+      persist(SB.from("comments").delete().eq("id", commentId), () => { cache.comments.splice(i, 0, removed); });
       return true;
     },
 
@@ -439,37 +288,37 @@ const DB = (() => {
       target.updated_at = new Date().toISOString();
       dup.support_count = 0;
       dup.duplicate_of_issue_id = targetId;
-      _save();
+      persist(SB.from("issues").update({ support_count: target.support_count, updated_at: target.updated_at }).eq("id", targetId));
+      persist(SB.from("issues").update({ support_count: 0 }).eq("id", dupId));
       return { moved, targetTitle: target.title };
     },
 
-    /* ----- categories ----- */
-    categories() { return state.categories; },
-    activeCategories() { return state.categories.filter((c) => c.is_active); },
+    /* ----- categories (client-side config) ----- */
+    categories() { return cfg.categories; },
+    activeCategories() { return cfg.categories.filter((c) => c.is_active); },
     addCategory(cat) {
       cat.slug = cat.slug || (cat.label || "category").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-      if (state.categories.some((c) => c.slug === cat.slug)) cat.slug += "-" + Date.now().toString(36);
-      state.categories.push(Object.assign({ color: "#666", icon: "📍", is_active: true }, cat));
-      _save();
+      if (cfg.categories.some((c) => c.slug === cat.slug)) cat.slug += "-" + Date.now().toString(36);
+      cfg.categories.push(Object.assign({ color: "#666", icon: "📍", is_active: true }, cat));
+      saveCfg();
       return cat;
     },
     updateCategory(slug, patch) {
-      const c = state.categories.find((x) => x.slug === slug);
-      if (c) { Object.assign(c, patch); _save(); }
+      const c = cfg.categories.find((x) => x.slug === slug);
+      if (c) { Object.assign(c, patch); saveCfg(); }
       return c;
     },
 
-    /* ----- site settings ----- */
-    settings() { return state.settings; },
-    saveSettings(patch) { Object.assign(state.settings, patch); _save(); return state.settings; },
+    /* ----- site settings (client-side config) ----- */
+    settings() { return cfg.settings; },
+    saveSettings(patch) { Object.assign(cfg.settings, patch); saveCfg(); return cfg.settings; },
 
-    /* ----- admin session ----- */
-    isAdmin() { return !!state.admin; },
-    login(pw) { if (pw === "stc-demo") { state.admin = true; _save(); return true; } return false; },
-    logout() { state.admin = false; _save(); },
+    /* ----- auth (delegates to Supabase Auth via js/supabase.js) ----- */
+    isAdmin() { return typeof Session !== "undefined" && Session.profile && Session.profile.role === "moderator"; },
+    currentUser() { return typeof Session !== "undefined" ? Session.user : null; },
+    logout() { Auth.signOut(); },
 
-    /* ----- misc ----- */
-    reset() { localStorage.removeItem(KEY); state = _load(); },
+    /* ----- stats ----- */
     stats() {
       const pub = this.publicIssues();
       return {

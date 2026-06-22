@@ -62,9 +62,9 @@ function navigate(hash) { window.location.hash = hash; }
 
 function render() {
   const path = (window.location.hash || "#/").replace(/^#/, "");
-  // admin guard
-  if (path.startsWith("/admin") && path !== "/admin/login" && !DB.isAdmin()) {
-    return navigate("/admin/login");
+  // admin guard — moderators only
+  if (path.startsWith("/admin") && !DB.isAdmin()) {
+    return navigate("/login");
   }
   for (const r of routes) {
     const m = path.match(r.re);
@@ -107,12 +107,17 @@ function publicNav() {
           <a href="#/about">About</a>
           <a href="#/faq">FAQ</a>
           <a href="#/emergency">Emergency</a>
-          <a href="#/admin/dashboard">Admin</a>
+          ${Auth.isModerator() ? `<a href="#/admin/dashboard">Admin</a>` : ""}
+          ${Auth.isLoggedIn()
+            ? `<a href="#/" id="nav-logout" title="${esc(Auth.email() || "")}">Log out (${esc(Auth.displayName())})</a>`
+            : `<a href="#/login">Log in</a>`}
         </nav>
       </div>
     </header>`);
   nav.querySelector(".nav-toggle").onclick = () => nav.querySelector(".nav-links").classList.toggle("open");
   nav.querySelectorAll(".nav-links a").forEach((a) => a.addEventListener("click", () => nav.querySelector(".nav-links").classList.remove("open")));
+  const lo = nav.querySelector("#nav-logout");
+  if (lo) lo.onclick = (e) => { e.preventDefault(); DB.logout(); toast("Logged out"); navigate("/"); };
   return nav;
 }
 
@@ -139,7 +144,7 @@ function footer() {
         </div>
       </div>
       <div class="wrap" style="margin-top:18px;border-top:1px solid var(--line);padding-top:14px;font-size:12px;color:var(--ink-soft)">
-        Prototype build • data is stored only in your browser • <a href="#/" id="reset-link">reset demo data</a>
+        Prototype build • shared data via Supabase
       </div>
     </footer>`);
 }
@@ -151,10 +156,6 @@ function pageShell(...children) {
   children.forEach((c) => main.appendChild(c));
   frag.appendChild(main);
   const f = footer();
-  f.querySelector("#reset-link").onclick = (e) => {
-    e.preventDefault();
-    if (confirm("Reset all demo data back to the seed cases?")) { DB.reset(); toast("Demo data reset"); render(); }
-  };
   frag.appendChild(f);
   const div = document.createElement("div");
   div.appendChild(frag);
@@ -1332,16 +1333,19 @@ route(/^\/issues\/([\w-]+)$/, function issueDetail(id) {
           </div>`).join("")
           : `<p class="muted">No comments yet. Be the first to add context.</p>`}
       </div>
-      <div class="comment-form">
-        <input type="text" id="cm-name" placeholder="Your name (optional)" maxlength="60">
-        <textarea id="cm-body" placeholder="Add a comment…" maxlength="1000"></textarea>
-        <div class="row" style="justify-content:flex-end"><button class="btn btn-primary btn-sm" id="cm-post">Post comment</button></div>
-      </div>`;
-    cc.querySelector("#cm-post").onclick = () => {
-      const name = cc.querySelector("#cm-name").value;
+      ${Auth.isLoggedIn()
+        ? `<div class="comment-form">
+             <div class="muted" style="font-size:12px;margin-bottom:6px">Posting as <strong>${esc(Auth.displayName())}</strong></div>
+             <textarea id="cm-body" placeholder="Add a comment…" maxlength="1000"></textarea>
+             <div class="row" style="justify-content:flex-end"><button class="btn btn-primary btn-sm" id="cm-post">Post comment</button></div>
+           </div>`
+        : `<div class="comment-form"><p class="muted" style="font-size:13px;margin:0">
+             <a href="#/login">Log in</a> to join the discussion.</p></div>`}`;
+    const postBtn = cc.querySelector("#cm-post");
+    if (postBtn) postBtn.onclick = () => {
       const body = cc.querySelector("#cm-body").value;
       if (!body.trim()) return toast("Write something first.");
-      DB.addComment(issue.id, name, body);
+      DB.addComment(issue.id, null, body);
       toast("Comment posted");
       renderComments();
     };
@@ -1475,31 +1479,70 @@ function adminShell(activePath, ...children) {
   return frag;
 }
 
-route(/^\/admin\/login$/, function adminLogin() {
-  if (DB.isAdmin()) { navigate("/admin/dashboard"); return document.createElement("div"); }
+/* ----- account: log in / sign up (everyone needs an account to participate) ----- */
+function accountPage() {
+  if (Auth.isLoggedIn()) { navigate("/"); return document.createElement("div"); }
   const wrap = document.createElement("div");
   wrap.appendChild(publicNav());
   const card = el(`
-    <div class="wrap section" style="max-width:420px">
+    <div class="wrap section" style="max-width:440px">
       <div class="card">
-        <h1 style="margin-bottom:4px">STC admin login</h1>
-        <p class="muted" style="margin-top:0">Demo console. In production this is Supabase Auth.</p>
-        <label class="field">Email <input type="email" value="moderator@stc.sg"></label>
-        <label class="field">Password <input type="text" id="pw" placeholder="stc-demo"></label>
-        <button class="btn btn-primary btn-block" id="login-btn">Log in</button>
-        <p class="help" style="margin-top:12px">Demo password: <code>stc-demo</code></p>
+        <div class="row" style="gap:6px;margin-bottom:12px">
+          <button class="btn btn-sm" id="tab-in">Log in</button>
+          <button class="btn btn-sm" id="tab-up">Sign up</button>
+        </div>
+        <div id="auth-body"></div>
       </div>
     </div>`);
-  card.querySelector("#login-btn").onclick = () => {
-    if (DB.login(card.querySelector("#pw").value.trim())) { toast("Welcome back"); navigate("/admin/dashboard"); }
-    else toast("Wrong password (try stc-demo)");
-  };
-  card.querySelector("#pw").addEventListener("keydown", (e) => { if (e.key === "Enter") card.querySelector("#login-btn").click(); });
+  const body = card.querySelector("#auth-body");
+  let mode = "in";
+
+  async function submit() {
+    const email = body.querySelector("#a-email").value.trim();
+    const pw = body.querySelector("#a-pw").value;
+    const msg = body.querySelector("#a-msg");
+    const go = body.querySelector("#a-go");
+    if (!email || !pw) { msg.textContent = "Enter your email and password."; return; }
+    go.disabled = true; msg.textContent = "Working…";
+    try {
+      if (mode === "in") {
+        const { error } = await Auth.signIn(email, pw);
+        if (error) { msg.textContent = error.message; go.disabled = false; return; }
+        toast("Welcome back"); navigate("/");
+      } else {
+        const name = body.querySelector("#a-name").value.trim();
+        const { data, error } = await Auth.signUp(email, pw, name);
+        if (error) { msg.textContent = error.message; go.disabled = false; return; }
+        if (data.session) { toast("Account created"); navigate("/"); }
+        else { msg.textContent = "Account created — check your email to confirm, then log in."; go.disabled = false; }
+      }
+    } catch (e) { msg.textContent = "Something went wrong. Please try again."; go.disabled = false; }
+  }
+
+  function paint() {
+    card.querySelector("#tab-in").className = "btn btn-sm " + (mode === "in" ? "btn-primary" : "btn-ghost");
+    card.querySelector("#tab-up").className = "btn btn-sm " + (mode === "up" ? "btn-primary" : "btn-ghost");
+    body.innerHTML = `
+      <h1 style="margin:4px 0 2px">${mode === "in" ? "Log in" : "Create an account"}</h1>
+      <p class="muted" style="margin-top:0">${mode === "in" ? "Welcome back." : "You need an account to report, comment, support or flag."}</p>
+      ${mode === "up" ? `<label class="field">Name <input type="text" id="a-name" placeholder="How you'll appear on comments"></label>` : ""}
+      <label class="field">Email <input type="email" id="a-email" placeholder="you@example.com"></label>
+      <label class="field">Password <input type="password" id="a-pw" placeholder="At least 6 characters"></label>
+      <button class="btn btn-primary btn-block" id="a-go">${mode === "in" ? "Log in" : "Sign up"}</button>
+      <p class="help" id="a-msg" style="margin-top:10px"></p>`;
+    body.querySelector("#a-go").onclick = submit;
+    body.querySelector("#a-pw").addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+  }
+  card.querySelector("#tab-in").onclick = () => { mode = "in"; paint(); };
+  card.querySelector("#tab-up").onclick = () => { mode = "up"; paint(); };
+  paint();
   wrap.appendChild(card);
   return wrap;
-});
+}
+route(/^\/login$/, accountPage);
+route(/^\/admin\/login$/, accountPage);
 
-route(/^\/admin\/logout$/, () => { DB.logout(); navigate("/admin/login"); return document.createElement("div"); });
+route(/^\/admin\/logout$/, () => { DB.logout(); navigate("/"); return document.createElement("div"); });
 
 route(/^\/admin\/?$/, () => { navigate("/admin/dashboard"); return document.createElement("div"); });
 
@@ -2051,5 +2094,25 @@ function download(name, mime, content) {
 /* ============================================================
  * boot
  * ============================================================ */
-if (!window.location.hash) window.location.hash = "#/";
-render();
+let __appReady = false;
+(async function boot() {
+  try {
+    await Auth.refresh();   // load current session + profile
+    await DB.load();        // fetch shared data into the cache
+  } catch (e) {
+    console.error("Startup failed:", e);
+    app().innerHTML = `<div class="wrap section"><h1>Couldn't reach the database</h1><p class="muted">Check your connection and refresh. If it persists, the Supabase project may be paused.</p></div>`;
+    return;
+  }
+  if (!window.location.hash) window.location.hash = "#/";
+  render();
+  __appReady = true;
+
+  // React to login / logout / token refresh: reload user-specific data + re-render.
+  SB.auth.onAuthStateChange(async () => {
+    if (!__appReady) return;
+    await Auth.refresh();
+    await DB.load();
+    render();
+  });
+})();
