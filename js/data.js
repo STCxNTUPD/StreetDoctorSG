@@ -40,6 +40,7 @@ const STATUSES = {
   improvement_in_progress:      { label: "Improvement in progress",   color: "#00897b", public: true  },
   improved:                     { label: "Improved",                  color: "#2e7d32", public: true  },
   archived:                     { label: "Archived",                  color: "#757575", public: true  },
+  removed:                      { label: "Removed",                   color: "#b00020", public: false }, // taken down after an upheld community flag
 };
 
 // Statuses an admin can move a published case through (the tracking lifecycle).
@@ -57,6 +58,19 @@ const AFFECTED_USERS = [
   { id: "prams",            label: "Prams / strollers" },
   { id: "visually_impaired",label: "Visually impaired" },
 ];
+
+/* ---------- Flag reasons (community moderation) ----------
+ * Used by the "⚑ Report" flow. These are about content being WRONG or not
+ * belonging — not about disagreeing with a case. The UI makes that explicit. */
+const FLAG_REASONS = [
+  { id: "not_real",          label: "This problem isn't real or doesn't exist" },
+  { id: "wrong_location",    label: "Wrong or inaccurate location" },
+  { id: "duplicate",         label: "Duplicate of another case" },
+  { id: "offensive_or_spam", label: "Offensive, abusive, or spam" },
+  { id: "personal_data",     label: "Contains personal data (faces, plates)" },
+  { id: "other",             label: "Something else (please explain)" },
+];
+const flagReasonLabel = (id) => FLAG_REASONS.find((r) => r.id === id)?.label || id;
 
 /* ---------- Seed cases (a few realistic Singapore locations) ---------- */
 const SEED_ISSUES = [
@@ -191,13 +205,15 @@ const SEED_ISSUES = [
     affected_users: ["pedestrians", "cyclists"],
     lng: 103.9305, lat: 1.3266,
     address_text: "Bedok Park Connector",
-    status: "pending_moderation",
-    support_count: 0,
+    status: "published",
+    support_count: 4,
     photos: [],
     created_at: "2026-06-17T21:30:00Z",
     updated_at: "2026-06-17T21:30:00Z",
     email: "night.walker@example.com",
-    status_history: [],
+    status_history: [
+      { new_status: "published", note: "Auto-published on submission.", is_public: true, created_at: "2026-06-17T21:30:00Z" },
+    ],
   },
   {
     id: "sd-1007",
@@ -208,13 +224,27 @@ const SEED_ISSUES = [
     affected_users: ["cyclists"],
     lng: 103.7420, lat: 1.3331,
     address_text: "Jurong East Central",
-    status: "pending_moderation",
-    support_count: 0,
+    status: "published",
+    support_count: 2,
     photos: [],
     created_at: "2026-06-18T07:10:00Z",
     updated_at: "2026-06-18T07:10:00Z",
     email: null,
-    status_history: [],
+    status_history: [
+      { new_status: "published", note: "Auto-published on submission.", is_public: true, created_at: "2026-06-18T07:10:00Z" },
+    ],
+  },
+];
+
+/* ---------- Seed community flags (demo the moderation queue) ---------- */
+const SEED_FLAGS = [
+  {
+    id: "fl-2001",
+    issue_id: "sd-1005",
+    reason: "wrong_location",
+    detail: "I walk here daily — the bin centre is one block north, not at this pin.",
+    status: "open",
+    created_at: "2026-06-19T03:00:00Z",
   },
 ];
 
@@ -233,12 +263,28 @@ const DB = (() => {
         if (!s.categories) s.categories = structuredClone(DEFAULT_CATEGORIES);
         if (!s.settings)   s.settings = structuredClone(DEFAULT_SETTINGS);
         else s.settings = Object.assign(structuredClone(DEFAULT_SETTINGS), s.settings);
+        if (!s.flags)   s.flags = [];      // community moderation reports
+        if (!s.flagged) s.flagged = {};    // issueId -> true (this browser flagged it)
+        // Moderation gate removed: anything that was awaiting moderation is now
+        // auto-published, matching the new "publish first, flag if wrong" model.
+        s.issues.forEach((i) => {
+          if (i.status === "pending_moderation") {
+            i.status = "published";
+            (i.status_history = i.status_history || []).push({
+              new_status: "published", note: "Auto-published (moderation step removed).",
+              is_public: true, created_at: new Date().toISOString(),
+            });
+          }
+        });
+        localStorage.setItem(KEY, JSON.stringify(s));
         return s;
       } catch (e) { /* fall through to seed */ }
     }
     const fresh = {
       issues: structuredClone(SEED_ISSUES),
       votes: {},      // issueId -> true (this browser supported it)  ~ §5.2 fingerprint check
+      flags: structuredClone(SEED_FLAGS),  // community moderation reports
+      flagged: {},    // issueId -> true (this browser flagged it)   ~ dedupe like votes
       admin: false,   // logged-in flag
       categories: structuredClone(DEFAULT_CATEGORIES),
       settings: structuredClone(DEFAULT_SETTINGS),
@@ -254,17 +300,19 @@ const DB = (() => {
     /* ----- issues ----- */
     allIssues() { return state.issues; },
     publicIssues() {
-      return state.issues.filter((i) => STATUSES[i.status]?.public && i.status !== "pending_moderation");
+      return state.issues.filter((i) => STATUSES[i.status]?.public);
     },
     getIssue(id) { return state.issues.find((i) => i.id === id) || null; },
 
     addIssue(issue) {
       issue.id = "sd-" + Date.now();
-      issue.status = "pending_moderation";
+      issue.status = "published";        // auto-publish: live on the map immediately
       issue.support_count = 0;
-      issue.status_history = [];
       issue.created_at = new Date().toISOString();
       issue.updated_at = issue.created_at;
+      issue.status_history = [
+        { new_status: "published", note: "Auto-published on submission.", is_public: true, created_at: issue.created_at },
+      ];
       issue.geometry = issue.geometry || null;        // optional highlighted road segment (LineString coords)
       issue.asset_type = issue.asset_type || "street"; // "street" | "transit"
       issue.transit_ref = issue.transit_ref || null;   // station name when asset_type === "transit"
@@ -306,6 +354,42 @@ const DB = (() => {
       it.support_count = (it.support_count || 0) + 1;
       _save();
       return true;
+    },
+
+    /* ----- flags (community moderation: anyone can report a bad case) ----- */
+    hasFlagged(id) { return !!state.flagged[id]; },
+    flagIssue(id, reason, detail) {
+      const it = this.getIssue(id);
+      if (!it || !STATUSES[it.status]?.public) return null;   // can't flag a non-public case
+      if (state.flagged[id]) return null;                     // one report per browser per case
+      const flag = {
+        id: "fl-" + Date.now(),
+        issue_id: id,
+        reason: reason || "other",
+        detail: (detail || "").trim(),
+        status: "open",                                       // open | dismissed | upheld
+        created_at: new Date().toISOString(),
+      };
+      state.flags.push(flag);
+      state.flagged[id] = true;
+      _save();
+      return flag;
+    },
+    openFlags() { return state.flags.filter((f) => f.status === "open"); },
+    flagsForIssue(id) { return state.flags.filter((f) => f.issue_id === id && f.status === "open"); },
+    flaggedIssues() {
+      const ids = [...new Set(this.openFlags().map((f) => f.issue_id))];
+      return ids.map((id) => this.getIssue(id)).filter(Boolean);
+    },
+    // Resolve every open flag on a case. status: "dismissed" (keep case) | "upheld" (case removed).
+    clearFlags(issueId, status) {
+      let n = 0;
+      const now = new Date().toISOString();
+      state.flags.forEach((f) => {
+        if (f.issue_id === issueId && f.status === "open") { f.status = status; f.resolved_at = now; n++; }
+      });
+      if (n) _save();
+      return n;
     },
 
     /* ----- merge (transfer support to the primary case) ----- */
@@ -354,7 +438,7 @@ const DB = (() => {
         total: pub.length,
         improved: pub.filter((i) => i.status === "improved").length,
         supporters: pub.reduce((s, i) => s + (i.support_count || 0), 0),
-        pending: state.issues.filter((i) => i.status === "pending_moderation").length,
+        flags: this.openFlags().length,
       };
     },
   };

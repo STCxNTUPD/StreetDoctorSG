@@ -219,8 +219,8 @@ route(/^\/$/, function home() {
             <ol style="padding-left:18px;color:var(--ink-soft)">
               <li>Drop a pin where the problem is.</li>
               <li>Pick a type, describe it, add up to 3 photos.</li>
-              <li>STC reviews and publishes it on the map.</li>
-              <li>Residents support cases; STC tracks progress with authorities.</li>
+              <li>It's published on the map straight away — no waiting.</li>
+              <li>Residents support cases and flag any that are wrong; STC tracks progress with authorities.</li>
             </ol>
             <a class="btn btn-primary btn-block" href="#/map?report=1" style="margin-top:12px">Start a report</a>
           </div>
@@ -696,7 +696,7 @@ function mountReportPanel(container, rep, hooks) {
       <label class="checkbox"><input type="checkbox" id="r-consent"> <span>I agree to the <a href="#/privacy" target="_blank">privacy policy</a> &amp; <a href="#/terms" target="_blank">terms</a>.</span></label>
       <label class="checkbox"><input type="checkbox" id="r-turnstile"> <span>I'm human (simulated Turnstile).</span></label>
       <button class="btn btn-accent btn-block" id="r-submit" style="margin-top:8px">Submit report</button>
-      <p class="help" style="text-align:center;margin-top:8px">Your report stays private until an STC moderator publishes it.</p>
+      <p class="help" style="text-align:center;margin-top:8px">Your report goes live on the public map straight away. Anyone can flag it if something's wrong.</p>
     </div>`);
   body.appendChild(form);
   container.appendChild(body);
@@ -792,7 +792,7 @@ function mountReportPanel(container, rep, hooks) {
       asset_type: rep.asset_type, transit_ref: rep.transit_ref,
     });
     hooks.onSubmitted(issue);
-    showSuccess();
+    showSuccess(issue);
   };
 
   function updateLocStatus() {
@@ -801,13 +801,14 @@ function mountReportPanel(container, rep, hooks) {
     s.classList.toggle("muted", rep.lat == null);
   }
 
-  function showSuccess() {
+  function showSuccess(issue) {
     container.innerHTML = "";
     container.appendChild(el(`
       <div class="center" style="padding:20px 4px">
         <div style="font-size:40px">✅</div>
-        <h3>Report submitted</h3>
-        <p class="muted">It's now pending moderation and will appear on the map once STC publishes it.</p>
+        <h3>Report published</h3>
+        <p class="muted">Thanks! Your report is now <strong>live on the public map</strong> for everyone to see and support.</p>
+        ${issue ? `<a class="btn btn-ghost btn-block" href="#/issues/${issue.id}" style="margin-bottom:8px">View your report</a>` : ""}
         <button class="btn btn-primary btn-block" id="again">Report another</button>
       </div>`));
     container.querySelector("#again").onclick = () => mountReportPanel(container, {
@@ -909,9 +910,9 @@ route(/^\/report\/success$/, function reportSuccess() {
     <div class="wrap section center" style="max-width:560px">
       <div class="card">
         <div style="font-size:48px">✅</div>
-        <h1>Report submitted</h1>
-        <p class="muted">Thank you. Your report is now <strong>pending moderation</strong> and won't appear on the public map until an STC moderator reviews and publishes it.</p>
-        <p class="muted">If you left an email, STC may contact you about status changes. There is no account to log into — keep an eye on the public map.</p>
+        <h1>Report published</h1>
+        <p class="muted">Thank you. Your report is now <strong>live on the public map</strong> — anyone can see it and add their support straight away.</p>
+        <p class="muted">If a case is inaccurate or doesn't belong, the community can flag it and STC moderators will review. If you left an email, STC may contact you about updates.</p>
         <div class="row center" style="justify-content:center;margin-top:14px">
           <a class="btn btn-primary" href="#/map">Back to map</a>
           <a class="btn btn-ghost" href="#/report">Report another</a>
@@ -1119,13 +1120,59 @@ function clearDraft() { localStorage.removeItem(DRAFT_KEY); }
 /* ============================================================
  * ISSUE DETAIL  /issues/:id
  * ============================================================ */
+/* ----- community flag dialog (⚑ Report) ----- */
+function openFlagDialog(issue) {
+  const overlay = el(`<div class="modal-overlay"></div>`);
+  const box = el(`
+    <div class="card modal-card">
+      <h3 style="margin-top:0">⚑ Report a problem with this case</h3>
+      <div class="disclaimer" style="margin-bottom:14px">
+        <span class="ic">ℹ️</span>
+        <div style="font-size:13px">
+          Use this only for content that is <strong>wrong or doesn't belong</strong> — the problem isn't real,
+          the location is wrong, it's a duplicate, or it's offensive / spam.
+          Please <strong>don't</strong> report a case just because you disagree with it or don't think it's important —
+          use <strong>👍 Support</strong> to show what matters to you instead.
+        </div>
+      </div>
+      <div class="field" style="margin-bottom:6px"><span style="font-weight:600">What's wrong?</span></div>
+      <div id="flag-reasons">
+        ${FLAG_REASONS.map((r, idx) => `
+          <label class="checkbox" style="display:flex;gap:8px;align-items:flex-start;margin:8px 0">
+            <input type="radio" name="flag-reason" value="${r.id}" ${idx === 0 ? "checked" : ""}>
+            <span>${esc(r.label)}</span>
+          </label>`).join("")}
+      </div>
+      <label class="field" style="margin-top:10px">Details (optional)
+        <textarea id="flag-detail" placeholder="Anything that helps a moderator check this."></textarea></label>
+      <div class="row" style="justify-content:flex-end;margin-top:8px">
+        <button class="btn btn-ghost" id="flag-cancel">Cancel</button>
+        <button class="btn btn-danger" id="flag-send">Submit report</button>
+      </div>
+    </div>`);
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  box.querySelector("#flag-cancel").onclick = close;
+  box.querySelector("#flag-send").onclick = () => {
+    const reason = box.querySelector("input[name=flag-reason]:checked")?.value;
+    const detail = box.querySelector("#flag-detail").value;
+    const f = DB.flagIssue(issue.id, reason, detail);
+    close();
+    if (f) { toast("Thanks — sent to moderators for review."); render(); }
+    else toast("You've already reported this case.");
+  };
+}
+
 route(/^\/issues\/([\w-]+)$/, function issueDetail(id) {
   const issue = DB.getIssue(id);
   if (!issue || (!STATUSES[issue.status]?.public && !DB.isAdmin())) {
-    return pageShell(el(`<div class="wrap section"><h1>Case not available</h1><p class="muted">This case may be pending moderation or doesn't exist.</p><a class="btn btn-ghost" href="#/map">Back to map</a></div>`));
+    return pageShell(el(`<div class="wrap section"><h1>Case not available</h1><p class="muted">This case may have been removed after review, or it doesn't exist.</p><a class="btn btn-ghost" href="#/map">Back to map</a></div>`));
   }
   const cat = catBySlug(issue.category);
   const voted = DB.hasVoted(issue.id);
+  const voted_flag = DB.hasFlagged(issue.id);
   const affected = (issue.affected_users || []).map((u) => AFFECTED_USERS.find((a) => a.id === u)?.label || u);
   const publicHistory = (issue.status_history || []).filter((h) => h.is_public);
 
@@ -1169,6 +1216,9 @@ route(/^\/issues\/([\w-]+)$/, function issueDetail(id) {
                 ${voted ? "✓ You supported this" : "👍 Support this issue"}
               </button>
               <button class="btn btn-ghost btn-block btn-sm" id="share-btn" style="margin-top:8px">🔗 Copy link</button>
+              <button class="btn btn-ghost btn-block btn-sm" id="flag-btn" style="margin-top:8px" ${voted_flag ? "disabled" : ""}>
+                ${voted_flag ? "✓ Reported for review" : "⚑ Report a problem with this case"}
+              </button>
             </div>
           </div>
           <div class="disclaimer" style="margin-top:14px">
@@ -1187,6 +1237,8 @@ route(/^\/issues\/([\w-]+)$/, function issueDetail(id) {
     const url = window.location.href;
     navigator.clipboard?.writeText(url).then(() => toast("Link copied")).catch(() => toast(url));
   };
+  const flagBtn = view.querySelector("#flag-btn");
+  if (flagBtn && !voted_flag) flagBtn.onclick = () => openFlagDialog(issue);
 
   setTimeout(() => {
     const map = new maplibregl.Map({ container: "detail-map", style: MAP_STYLE, center: [issue.lng, issue.lat], zoom: 15, interactive: true, attributionControl: false });
@@ -1229,7 +1281,9 @@ route(/^\/faq$/, prosePage("Frequently asked questions", `
   <h2>Do I need an account?</h2>
   <p>No. You can report and support cases without signing up. Email is optional and only used for status updates.</p>
   <h2>What happens after I report?</h2>
-  <p>Your case is <strong>pending moderation</strong> and hidden from the public map until an STC moderator reviews and publishes it.</p>
+  <p>Your case is <strong>published immediately</strong> on the public map, where anyone can see it and add their support. There's no waiting for moderation.</p>
+  <h2>I think a case is wrong or fake — what can I do?</h2>
+  <p>Open the case and use <strong>⚑ Report</strong> to flag content that is wrong or doesn't belong (not real, wrong location, duplicate, offensive or spam). STC moderators review flagged cases and remove the ones that don't belong. Please don't flag a case just because you disagree with it — use 👍 Support to show what matters to you.</p>
   <h2>What should I not report here?</h2>
   <p>Emergencies, crimes, or routine maintenance (potholes, fallen signs). Use 999 or OneService for those.</p>
   <h2>How reliable is the "support" count?</h2>
@@ -1280,6 +1334,7 @@ route(/^\/emergency$/, () => pageShell(el(`
  * ============================================================ */
 function adminShell(activePath, ...children) {
   const frag = document.createElement("div");
+  const openFlags = DB.openFlags().length;
   const nav = el(`
     <header class="nav admin-bar">
       <div class="wrap nav-inner">
@@ -1287,6 +1342,7 @@ function adminShell(activePath, ...children) {
         <nav class="nav-links" style="display:flex">
           <a href="#/admin/dashboard">Dashboard</a>
           <a href="#/admin/issues">Cases</a>
+          <a href="#/admin/flags">Flags${openFlags ? ` (${openFlags})` : ""}</a>
           <a href="#/admin/duplicates">Duplicates</a>
           <a href="#/admin/export">Export</a>
           <a href="#/admin/categories">Categories</a>
@@ -1339,7 +1395,8 @@ route(/^\/admin\/dashboard$/, function adminDashboard() {
   const all = DB.allIssues();
   const counts = {};
   all.forEach((i) => (counts[i.status] = (counts[i.status] || 0) + 1));
-  const pending = counts.pending_moderation || 0;
+  const openFlags = DB.openFlags().length;
+  const flaggedCount = DB.flaggedIssues().length;
   const recent = all.slice().sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at)).slice(0, 6);
 
   const view = el(`<div></div>`);
@@ -1347,8 +1404,8 @@ route(/^\/admin\/dashboard$/, function adminDashboard() {
     el(`<div class="wrap section">
       <h1>Dashboard</h1>
       <div class="grid grid-4">
-        <div class="card stat" style="border-color:${pending ? "#f3d9a8" : "var(--line)"};${pending ? "background:#fff6e8" : ""}">
-          <div class="n" style="color:${pending ? "#d79b00" : "var(--brand)"}">${pending}</div><div class="l">Pending moderation</div></div>
+        <div class="card stat" style="border-color:${openFlags ? "#f3c0c0" : "var(--line)"};${openFlags ? "background:#fdecec" : ""}">
+          <div class="n" style="color:${openFlags ? "#b00020" : "var(--brand)"}">${openFlags}</div><div class="l">Open flags</div></div>
         <div class="card stat"><div class="n">${counts.published || 0}</div><div class="l">Published</div></div>
         <div class="card stat"><div class="n">${(counts.improved || 0)}</div><div class="l">Improved</div></div>
         <div class="card stat"><div class="n">${all.length}</div><div class="l">Total cases</div></div>
@@ -1372,16 +1429,14 @@ route(/^\/admin\/dashboard$/, function adminDashboard() {
           </table></div>
         </div>
       </div>
-      ${pending ? `<a class="btn btn-accent" style="margin-top:18px" href="#/admin/issues?filter=pending">Review ${pending} pending case(s) →</a>` : ""}
+      ${openFlags ? `<a class="btn btn-accent" style="margin-top:18px" href="#/admin/flags">Review ${flaggedCount} flagged case(s) →</a>` : ""}
     </div>`)
   ));
   return view;
 });
 
 route(/^\/admin\/issues(?:\?.*)?$/, function adminIssues() {
-  const params = new URLSearchParams((window.location.hash.split("?")[1] || ""));
-  const preFilter = params.get("filter") === "pending" ? "pending_moderation" : "";
-  let fStatus = preFilter, fCat = "", sortKey = "updated_at", sortDir = -1;
+  let fStatus = "", fCat = "", sortKey = "updated_at", sortDir = -1;
 
   const view = el(`<div></div>`);
   const main = el(`<div class="wrap section"><h1>Cases</h1></div>`);
@@ -1420,39 +1475,24 @@ route(/^\/admin\/issues(?:\?.*)?$/, function adminIssues() {
         return (va > vb ? 1 : va < vb ? -1 : 0) * sortDir;
       });
 
-    const pendingRows = rows.filter((i) => i.status === "pending_moderation");
-
     tableWrap.querySelector("table").innerHTML = `
       <thead><tr>
         <th>Title</th><th>Type</th><th>Status</th><th>Supports</th><th>Updated</th><th>Actions</th>
       </tr></thead>
-      <tbody>${rows.map((i) => `
+      <tbody>${rows.map((i) => {
+        const fcount = DB.flagsForIssue(i.id).length;
+        return `
         <tr>
           <td><a href="#/admin/issues/${i.id}">${esc(i.title)}</a><div class="muted" style="font-size:12px">${esc(i.address_text || "")}</div></td>
           <td>${categoryTag(i.category)}</td>
-          <td>${statusBadge(i.status)}</td>
+          <td>${statusBadge(i.status)}${fcount ? ` <span class="badge" style="background:#b00020">⚑ ${fcount}</span>` : ""}</td>
           <td>${i.support_count}</td>
           <td class="muted">${fmtDate(i.updated_at)}</td>
           <td><div class="actions">
-            ${i.status === "pending_moderation"
-              ? `<button class="btn btn-sm btn-primary" data-approve="${i.id}">Approve</button>
-                 <button class="btn btn-sm btn-danger" data-reject="${i.id}">Reject</button>`
-              : `<a class="btn btn-sm btn-ghost" href="#/admin/issues/${i.id}">Open</a>`}
+            <a class="btn btn-sm btn-ghost" href="#/admin/issues/${i.id}">Open</a>
           </div></td>
-        </tr>`).join("") || `<tr><td colspan="6" class="muted" style="padding:24px;text-align:center">No matching cases.</td></tr>`}
+        </tr>`; }).join("") || `<tr><td colspan="6" class="muted" style="padding:24px;text-align:center">No matching cases.</td></tr>`}
       </tbody>`;
-
-    tableWrap.querySelectorAll("[data-approve]").forEach((b) => b.onclick = () => {
-      DB.pushStatus(b.dataset.approve, "published", "Case published after review.", true);
-      toast("Case published"); draw();
-    });
-    tableWrap.querySelectorAll("[data-reject]").forEach((b) => b.onclick = () => {
-      const reason = prompt("Reason for rejection (internal, not shown publicly):", "Out of scope / not a design issue");
-      if (reason === null) return;
-      DB.updateIssue(b.dataset.reject, { rejected_reason: reason });
-      DB.pushStatus(b.dataset.reject, "archived", "", false);
-      toast("Case rejected"); draw();
-    });
   }
 
   controls.querySelector("#f-status").value = fStatus;
@@ -1465,6 +1505,54 @@ route(/^\/admin\/issues(?:\?.*)?$/, function adminIssues() {
   return view;
 });
 
+route(/^\/admin\/flags$/, function adminFlags() {
+  const view = el(`<div></div>`);
+  const main = el(`<div class="wrap section">
+    <h1>Flagged cases</h1>
+    <p class="muted">Community-reported cases awaiting review. <strong>Dismiss flags</strong> to keep a case public, or <strong>remove</strong> it if it doesn't belong. Nothing is hard-deleted.</p>
+  </div>`);
+  const list = el(`<div id="flag-list"></div>`);
+  main.appendChild(list);
+
+  function draw() {
+    const issues = DB.flaggedIssues();
+    if (!issues.length) {
+      list.innerHTML = `<div class="card center" style="padding:30px"><div style="font-size:34px">✅</div><p class="muted">No open flags. Nothing to review.</p></div>`;
+      return;
+    }
+    list.innerHTML = "";
+    issues.forEach((i) => {
+      const flags = DB.flagsForIssue(i.id);
+      const card = el(`<div class="card" style="margin-bottom:14px">
+        <div class="detail-head">${statusBadge(i.status)} ${categoryTag(i.category)} <span class="badge" style="background:#b00020">⚑ ${flags.length} flag${flags.length > 1 ? "s" : ""}</span></div>
+        <h3 style="margin:10px 0 2px"><a href="#/admin/issues/${i.id}">${esc(i.title)}</a></h3>
+        <p class="muted" style="margin-top:0">📍 ${esc(i.address_text || "Location on map")}</p>
+        <ul class="flag-reasons">${flags.map((f) => `<li><strong>${esc(flagReasonLabel(f.reason))}</strong>${f.detail ? ` — ${esc(f.detail)}` : ""} <span class="muted" style="font-size:12px">· ${fmtDate(f.created_at)}</span></li>`).join("")}</ul>
+        <div class="row" style="margin-top:10px">
+          <button class="btn btn-ghost" data-dismiss="${i.id}">Dismiss flags (keep case)</button>
+          <button class="btn btn-danger" data-remove="${i.id}">Remove case</button>
+          <a class="btn btn-ghost" href="#/admin/issues/${i.id}">Open case</a>
+        </div>
+      </div>`);
+      list.appendChild(card);
+    });
+    list.querySelectorAll("[data-dismiss]").forEach((b) => b.onclick = () => {
+      DB.clearFlags(b.dataset.dismiss, "dismissed");
+      toast("Flags dismissed — case stays public."); draw();
+    });
+    list.querySelectorAll("[data-remove]").forEach((b) => b.onclick = () => {
+      const note = prompt("Internal note for removing this case:", "Removed after community flags — not a valid design issue.");
+      if (note === null) return;
+      DB.clearFlags(b.dataset.remove, "upheld");
+      DB.pushStatus(b.dataset.remove, "removed", note, false);
+      toast("Case removed from the public map."); draw();
+    });
+  }
+  draw();
+  view.appendChild(adminShell("/admin/flags", main));
+  return view;
+});
+
 route(/^\/admin\/issues\/([\w-]+)$/, function adminIssueEdit(id) {
   const issue = DB.getIssue(id);
   if (!issue) { const v = el("<div></div>"); v.appendChild(adminShell("/admin/issues", el(`<div class="wrap section"><h1>Not found</h1></div>`))); return v; }
@@ -1472,6 +1560,30 @@ route(/^\/admin\/issues\/([\w-]+)$/, function adminIssueEdit(id) {
   const main = el(`<div class="wrap section" style="max-width:860px"></div>`);
   main.appendChild(el(`<a href="#/admin/issues" class="muted" style="font-size:14px">← All cases</a>`));
   main.appendChild(el(`<div class="detail-head" style="margin-top:8px">${statusBadge(issue.status)} ${categoryTag(issue.category)}</div>`));
+
+  // community flags (if any open) — resolve right here
+  const openIssueFlags = DB.flagsForIssue(issue.id);
+  if (openIssueFlags.length) {
+    const fcard = el(`<div class="card" style="margin-top:16px;border-color:#f3c0c0;background:#fdecec">
+      <h3 style="margin-top:0">⚑ Community flags (${openIssueFlags.length})</h3>
+      <ul class="flag-reasons">${openIssueFlags.map((f) => `<li><strong>${esc(flagReasonLabel(f.reason))}</strong>${f.detail ? ` — ${esc(f.detail)}` : ""} <span class="muted" style="font-size:12px">· ${fmtDate(f.created_at)}</span></li>`).join("")}</ul>
+      <div class="row" style="margin-top:8px">
+        <button class="btn btn-ghost" id="flag-dismiss">Dismiss flags (keep case)</button>
+        <button class="btn btn-danger" id="flag-remove">Remove case</button>
+      </div>
+    </div>`);
+    fcard.querySelector("#flag-dismiss").onclick = () => {
+      DB.clearFlags(issue.id, "dismissed"); toast("Flags dismissed — case stays public."); render();
+    };
+    fcard.querySelector("#flag-remove").onclick = () => {
+      const note = prompt("Internal note for removing this case:", "Removed after community flags — not a valid design issue.");
+      if (note === null) return;
+      DB.clearFlags(issue.id, "upheld");
+      DB.pushStatus(issue.id, "removed", note, false);
+      toast("Case removed from the public map."); render();
+    };
+    main.appendChild(fcard);
+  }
 
   // editable fields
   const form = el(`<div class="card">
@@ -1518,7 +1630,7 @@ route(/^\/admin\/issues\/([\w-]+)$/, function adminIssueEdit(id) {
   main.appendChild(statusCard);
 
   // merge / duplicate
-  const others = DB.allIssues().filter((i) => i.id !== issue.id && i.status !== "pending_moderation" && i.status !== "duplicate");
+  const others = DB.allIssues().filter((i) => i.id !== issue.id && i.status !== "removed" && i.status !== "duplicate");
   const mergeCard = el(`<div class="card" style="margin-top:16px">
     <h3>Mark as duplicate</h3>
     <p class="muted">Point this case at the primary case it duplicates. Nothing is hard-deleted.</p>
@@ -1586,7 +1698,7 @@ route(/^\/admin\/issues\/([\w-]+)$/, function adminIssueEdit(id) {
 
 /* duplicates suggestions (simple geo distance + same category) */
 route(/^\/admin\/duplicates$/, function adminDuplicates() {
-  const issues = DB.allIssues().filter((i) => i.status !== "pending_moderation");
+  const issues = DB.allIssues().filter((i) => i.status !== "removed" && i.status !== "duplicate");
   const pairs = [];
   for (let a = 0; a < issues.length; a++) {
     for (let b = a + 1; b < issues.length; b++) {
