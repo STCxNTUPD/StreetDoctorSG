@@ -186,12 +186,13 @@ h1, h2, h3 { line-height: 1.2; margin: 0 0 .4em; }
   border-radius: 10px;
 }
 .dup-row {
-  display: flex; gap: 8px; align-items: center; padding: 8px 0;
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 8px 0;
   border-top: 1px solid rgba(0,0,0,.08);
 }
 .dup-row:first-of-type { border-top: 0; }
-.dup-row .grow { flex: 1; min-width: 0; }
-.dup-row a { font-size: 13px; font-weight: 600; }
+.dup-row .grow { flex: 1; min-width: 140px; }
+.dup-row .grow > a { font-size: 13px; font-weight: 600; }
+.dup-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 
 /* ---------- Forms ---------- */
 label.field { display: block; margin-bottom: 14px; font-weight: 600; font-size: 14px; }

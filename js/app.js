@@ -810,7 +810,10 @@ function mountReportPanel(container, rep, hooks) {
       const row = el(`<div class="dup-row">
         <div class="grow"><a href="#/issues/${i.id}" target="_blank" rel="noopener">${esc(i.title)}</a>
           <div class="muted" style="font-size:12px">${esc(cl.label || i.category)} · 👍 <span class="dn">${i.support_count}</span> supports</div></div>
-        <button class="btn btn-sm ${voted ? "btn-ghost" : "btn-primary"} dsup" ${voted ? "disabled" : ""}>${voted ? "✓ Supported" : "👍 Support"}</button>
+        <div class="dup-actions">
+          <a class="btn btn-sm btn-ghost" href="#/issues/${i.id}" target="_blank" rel="noopener">View details ↗</a>
+          <button class="btn btn-sm ${voted ? "btn-ghost" : "btn-primary"} dsup" ${voted ? "disabled" : ""}>${voted ? "✓ Supported" : "👍 Support"}</button>
+        </div>
       </div>`);
       const b = row.querySelector(".dsup");
       if (b && !voted) b.onclick = () => {
