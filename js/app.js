@@ -658,7 +658,18 @@ route(/^\/map(?:\?.*)?$/, function mapPage() {
         drawer.style.height = h + "px";
         e.preventDefault();
       };
-      const onUp = () => { dragging = false; drawer.style.transition = ""; window.removeEventListener("pointermove", onMove); };
+      const SNAPS = [0.25, 0.55, 0.9];   // fraction of viewport height
+      const onUp = () => {
+        if (!dragging) return;
+        dragging = false;
+        window.removeEventListener("pointermove", onMove);
+        const vh = window.innerHeight;
+        const cur = drawer.getBoundingClientRect().height / vh;
+        const target = SNAPS.reduce((a, b) => (Math.abs(b - cur) < Math.abs(a - cur) ? b : a));
+        drawer.style.transition = "height .2s ease";        // animate the snap
+        drawer.style.height = Math.round(vh * target) + "px";
+        setTimeout(() => { drawer.style.transition = ""; }, 220);
+      };
       const onDown = (e) => {
         if (!isMobile() || !drawer.classList.contains("open")) return;
         if (e.target.closest && e.target.closest(".drawer-close")) return;   // don't hijack the close button
