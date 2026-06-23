@@ -73,6 +73,7 @@ function render() {
       app().innerHTML = "";
       app().appendChild(r.view(...m.slice(1)));
       highlightNav(path);
+      I18N.apply(app());
       return;
     }
   }
@@ -111,6 +112,7 @@ function publicNav() {
           ${Auth.isLoggedIn()
             ? `<a href="#/" id="nav-logout" title="${esc(Auth.email() || "")}">Log out (${esc(Auth.displayName())})</a>`
             : `<a href="#/login">Log in</a>`}
+          <a href="#/" id="lang-toggle" data-noi18n title="Language / 语言">${I18N.lang === "zh" ? "EN" : "中文"}</a>
         </nav>
       </div>
     </header>`);
@@ -118,6 +120,7 @@ function publicNav() {
   nav.querySelectorAll(".nav-links a").forEach((a) => a.addEventListener("click", () => nav.querySelector(".nav-links").classList.remove("open")));
   const lo = nav.querySelector("#nav-logout");
   if (lo) lo.onclick = (e) => { e.preventDefault(); DB.logout(); toast("Logged out"); navigate("/"); };
+  nav.querySelector("#lang-toggle").onclick = (e) => { e.preventDefault(); I18N.set(I18N.other()); };
   return nav;
 }
 
@@ -1258,7 +1261,7 @@ route(/^\/issues\/([\w-]+)$/, function issueDetail(id) {
         ${issue.asset_type === "transit" && issue.transit_ref ? `<span class="transit-pill">🚉 ${esc(issue.transit_ref)}</span>` : ""}
         ${normalizeGeom(issue.geometry).length ? `<span class="tag">🛣️ Road segment${normalizeGeom(issue.geometry).length > 1 ? "s (" + normalizeGeom(issue.geometry).length + ")" : ""}</span>` : ""}
       </div>
-      <h1 style="margin-bottom:6px">${esc(issue.title)}</h1>
+      <h1 style="margin-bottom:6px" data-noi18n>${esc(issue.title)}</h1>
       <p class="muted" style="margin-top:0">📍 ${esc(issue.address_text || "Location on map")} · Reported ${fmtDate(issue.created_at)} · Updated ${fmtDate(issue.updated_at)}</p>
 
       <div class="row" style="align-items:flex-start;margin-top:12px">
@@ -1266,7 +1269,7 @@ route(/^\/issues\/([\w-]+)$/, function issueDetail(id) {
           ${issue.photos && issue.photos.length ? `<div class="carousel">${issue.photos.map((p) => `<img src="${p}" alt="">`).join("")}</div>` : ""}
           <div class="card" style="margin-top:14px">
             <h3>Description</h3>
-            <p>${esc(issue.description)}</p>
+            <p data-noi18n>${esc(issue.description)}</p>
             ${affected.length ? `<h3 style="margin-top:16px">Who is affected</h3><div class="row">${affected.map((a) => `<span class="tag">${esc(a)}</span>`).join("")}</div>` : ""}
           </div>
 
@@ -1329,7 +1332,7 @@ route(/^\/issues\/([\w-]+)$/, function issueDetail(id) {
             <div class="comment-head"><strong>${esc(c.name)}</strong><span class="muted" style="font-size:12px">${fmtDateTime(c.created_at)}</span>
               ${DB.isAdmin() ? `<button class="comment-del" data-del="${c.id}" title="Delete comment">✕</button>` : ""}
             </div>
-            <div class="comment-body">${esc(c.body)}</div>
+            <div class="comment-body" data-noi18n>${esc(c.body)}</div>
           </div>`).join("")
           : `<p class="muted">No comments yet. Be the first to add context.</p>`}
       </div>
