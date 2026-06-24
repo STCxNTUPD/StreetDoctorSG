@@ -62,10 +62,9 @@ function navigate(hash) { window.location.hash = hash; }
 
 function render() {
   const path = (window.location.hash || "#/").replace(/^#/, "");
-  // admin guard — moderators only (login/logout pages are public)
-  const adminPublic = ["/admin/login", "/admin/logout"];
-  if (path.startsWith("/admin") && !adminPublic.includes(path) && !DB.isAdmin()) {
-    return navigate("/admin/login");
+  // admin guard — moderators only
+  if (path.startsWith("/admin") && !DB.isAdmin()) {
+    return navigate("/login");
   }
   for (const r of routes) {
     const m = path.match(r.re);
@@ -110,12 +109,17 @@ function publicNav() {
           <a href="#/faq">FAQ</a>
           <a href="#/emergency">Emergency</a>
           ${Auth.isModerator() ? `<a href="#/admin/dashboard">Admin</a>` : ""}
+          ${Auth.isLoggedIn()
+            ? `<a href="#/" id="nav-logout" title="${esc(Auth.email() || "")}">Log out (${esc(Auth.displayName())})</a>`
+            : `<a href="#/login">Log in</a>`}
           <a href="#/" id="lang-toggle" data-noi18n title="Language / 语言">${I18N.lang === "zh" ? "EN" : "中文"}</a>
         </nav>
       </div>
     </header>`);
   nav.querySelector(".nav-toggle").onclick = () => nav.querySelector(".nav-links").classList.toggle("open");
   nav.querySelectorAll(".nav-links a").forEach((a) => a.addEventListener("click", () => nav.querySelector(".nav-links").classList.remove("open")));
+  const lo = nav.querySelector("#nav-logout");
+  if (lo) lo.onclick = (e) => { e.preventDefault(); DB.logout(); toast("Logged out"); navigate("/"); };
   nav.querySelector("#lang-toggle").onclick = (e) => { e.preventDefault(); I18N.set(I18N.other()); };
   return nav;
 }
@@ -622,6 +626,7 @@ route(/^\/map(?:\?.*)?$/, function mapPage() {
     }
 
     function openDrawer() {
+      if (!Auth.isLoggedIn()) { toast("Please log in to report an issue."); navigate("/login"); return; }
       filters.classList.remove("open");   // don't stack the filter panel over the drawer
       drawer.classList.add("open");
       const rep = { lng: null, lat: null, address_text: "", category: DB.activeCategories()[0]?.slug || "",
@@ -994,6 +999,18 @@ function mountReportPanel(container, rep, hooks) {
 const DRAFT_KEY = "streetdoctor_draft_v1";
 
 route(/^\/report$/, function reportPage() {
+  if (!Auth.isLoggedIn()) {
+    const v = document.createElement("div");
+    v.appendChild(publicNav());
+    const c = el(`<div class="wrap section" style="max-width:440px"><div class="card center">
+      <div style="font-size:38px">🔒</div>
+      <h1>Log in to report</h1>
+      <p class="muted">You need an account to submit a report. It's quick and free.</p>
+      <a class="btn btn-primary btn-block" href="#/login">Log in / Sign up</a>
+    </div></div>`);
+    v.appendChild(c);
+    return v;
+  }
   const draft = loadDraft() || {
     lng: null, lat: null, address_text: "", category: "", title: "", description: "",
     affected_users: [], photos: [], email: "", consent: false, turnstile: false,
@@ -1163,6 +1180,10 @@ function renderStep(step, d, onChange, nav) {
     paintPhotos();
     body.appendChild(grid);
     body.appendChild(el(`<div class="help">Allowed: JPG / PNG / WebP, ≤ 5MB each. Images are compressed in the browser for this prototype.</div>`));
+  }
+
+  if (step === 7) {
+    body.appendChild(el(`<div class="loc-hint">You're reporting as <strong>${esc(Auth.displayName())}</strong>. STC can reach you through your account if there's an update — no separate email needed.</div>`));
   }
 
   if (step === 8) {
@@ -1541,6 +1562,10 @@ function accountPage() {
   const card = el(`
     <div class="wrap section" style="max-width:440px">
       <div class="card">
+        <div class="row" style="gap:6px;margin-bottom:12px">
+          <button class="btn btn-sm" id="tab-in">Log in</button>
+          <button class="btn btn-sm" id="tab-up">Sign up</button>
+        </div>
         <div id="auth-body"></div>
       </div>
     </div>`);
@@ -1557,7 +1582,7 @@ function accountPage() {
       try {
         const { error } = await Auth.resetPassword(email);
         if (error) { msg.textContent = error.message; go.disabled = false; return; }
-        msg.textContent = "Reset link sent — check your inbox.";
+        msg.textContent = "If that email has an account, a reset link is on its way — check your inbox.";
       } catch (e) { msg.textContent = "Something went wrong. Please try again."; go.disabled = false; }
       return;
     }
@@ -1565,44 +1590,57 @@ function accountPage() {
     if (!email || !pw) { msg.textContent = "Enter your email and password."; return; }
     go.disabled = true; msg.textContent = "Working…";
     try {
-      const { error } = await Auth.signIn(email, pw);
-      if (error) { msg.textContent = error.message; go.disabled = false; return; }
-      toast("Welcome back"); navigate("/admin/dashboard");
+      if (mode === "in") {
+        const { error } = await Auth.signIn(email, pw);
+        if (error) { msg.textContent = error.message; go.disabled = false; return; }
+        toast("Welcome back"); navigate("/");
+      } else {
+        const name = body.querySelector("#a-name").value.trim();
+        const { data, error } = await Auth.signUp(email, pw, name);
+        if (error) { msg.textContent = error.message; go.disabled = false; return; }
+        if (data.session) { toast("Account created"); navigate("/"); }
+        else { msg.textContent = "Account created — check your email to confirm, then log in."; go.disabled = false; }
+      }
     } catch (e) { msg.textContent = "Something went wrong. Please try again."; go.disabled = false; }
   }
 
   function paint() {
+    card.querySelector("#tab-in").className = "btn btn-sm " + (mode !== "up" ? "btn-primary" : "btn-ghost");
+    card.querySelector("#tab-up").className = "btn btn-sm " + (mode === "up" ? "btn-primary" : "btn-ghost");
     if (mode === "reset") {
       body.innerHTML = `
-        <h1 style="margin:4px 0 2px">Reset password</h1>
-        <p class="muted" style="margin-top:0">Enter your admin email to receive a reset link.</p>
-        <label class="field">Email <input type="email" id="a-email" placeholder="admin@example.com"></label>
+        <h1 style="margin:4px 0 2px">Reset your password</h1>
+        <p class="muted" style="margin-top:0">We'll email you a link to set a new password.</p>
+        <label class="field">Email <input type="email" id="a-email" placeholder="you@example.com"></label>
         <button class="btn btn-primary btn-block" id="a-go">Send reset link</button>
         <p class="help" id="a-msg" style="margin-top:10px"></p>
-        <p class="help" style="margin-top:10px"><a href="#/admin/login" id="back-login">← Back to log in</a></p>`;
+        <p class="help" style="margin-top:10px"><a href="#/login" id="back-login">← Back to log in</a></p>`;
       body.querySelector("#a-go").onclick = submit;
       body.querySelector("#a-email").addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
       body.querySelector("#back-login").onclick = (e) => { e.preventDefault(); mode = "in"; paint(); };
       return;
     }
     body.innerHTML = `
-      <h1 style="margin:4px 0 2px">Admin login</h1>
-      <p class="muted" style="margin-top:0">STC staff only.</p>
-      <label class="field">Email <input type="email" id="a-email" placeholder="admin@example.com"></label>
-      <label class="field">Password <input type="password" id="a-pw" placeholder="Password"></label>
-      <button class="btn btn-primary btn-block" id="a-go">Log in</button>
-      <p class="help" style="margin-top:10px"><a href="#/admin/login" id="forgot">Forgot password?</a></p>
+      <h1 style="margin:4px 0 2px">${mode === "in" ? "Log in" : "Create an account"}</h1>
+      <p class="muted" style="margin-top:0">${mode === "in" ? "Welcome back." : "You need an account to report, comment, support or flag."}</p>
+      ${mode === "up" ? `<label class="field">Name <input type="text" id="a-name" placeholder="How you'll appear on comments"></label>` : ""}
+      <label class="field">Email <input type="email" id="a-email" placeholder="you@example.com"></label>
+      <label class="field">Password <input type="password" id="a-pw" placeholder="At least 6 characters"></label>
+      <button class="btn btn-primary btn-block" id="a-go">${mode === "in" ? "Log in" : "Sign up"}</button>
+      ${mode === "in" ? `<p class="help" style="margin-top:10px"><a href="#/login" id="forgot">Forgot password?</a></p>` : ""}
       <p class="help" id="a-msg" style="margin-top:10px"></p>`;
     body.querySelector("#a-go").onclick = submit;
     body.querySelector("#a-pw").addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
     const forgot = body.querySelector("#forgot");
     if (forgot) forgot.onclick = (e) => { e.preventDefault(); mode = "reset"; paint(); };
   }
+  card.querySelector("#tab-in").onclick = () => { mode = "in"; paint(); };
+  card.querySelector("#tab-up").onclick = () => { mode = "up"; paint(); };
   paint();
   wrap.appendChild(card);
   return wrap;
 }
-route(/^\/login$/, () => { navigate("/admin/login"); return document.createElement("div"); });
+route(/^\/login$/, accountPage);
 route(/^\/admin\/login$/, accountPage);
 
 /* ----- set a new password (landing page for the reset email link) ----- */
