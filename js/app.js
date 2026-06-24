@@ -1598,8 +1598,13 @@ function accountPage() {
         const name = body.querySelector("#a-name").value.trim();
         const { data, error } = await Auth.signUp(email, pw, name);
         if (error) { msg.textContent = error.message; go.disabled = false; return; }
-        if (data.session) { toast("Account created"); navigate("/"); }
-        else { msg.textContent = "Account created — check your email to confirm, then log in."; go.disabled = false; }
+        // Email confirmation is disabled (no verification mail). signUp usually
+        // returns a session straight away; if it doesn't, sign in immediately so
+        // the user is never asked to wait for a confirmation email.
+        if (data.session) { toast("Account created"); navigate("/"); return; }
+        const { error: e2 } = await Auth.signIn(email, pw);
+        if (e2) { msg.textContent = e2.message; go.disabled = false; return; }
+        toast("Account created"); navigate("/");
       }
     } catch (e) { msg.textContent = "Something went wrong. Please try again."; go.disabled = false; }
   }
