@@ -15,6 +15,17 @@ const SB = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 // Current signed-in user + their profile (display name + role). Read by DB.
 const Session = { user: null, profile: null };
 
+// Password-recovery email link: Supabase parses the returned URL on load and
+// fires PASSWORD_RECOVERY. Flag it (and route there once the app is ready) so
+// the user lands on the "set a new password" screen.
+window.__sdRecovery = false;
+SB.auth.onAuthStateChange((event) => {
+  if (event === "PASSWORD_RECOVERY") {
+    window.__sdRecovery = true;
+    if (window.__sdReady) location.hash = "#/reset-password";
+  }
+});
+
 const Auth = {
   // Load the current session + profile into Session (call at startup / on change).
   async refresh() {
@@ -35,6 +46,10 @@ const Auth = {
     return SB.auth.signInWithPassword({ email, password });
   },
   async signOut() { await SB.auth.signOut(); },
+  // email a password-reset link that returns to this site (see URL note in README)
+  async resetPassword(email) {
+    return SB.auth.resetPasswordForEmail((email || "").trim(), { redirectTo: location.origin + location.pathname });
+  },
 
   isLoggedIn() { return !!Session.user; },
   isModerator() { return Session.profile && Session.profile.role === "moderator"; },

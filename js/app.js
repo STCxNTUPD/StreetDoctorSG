@@ -1547,9 +1547,19 @@ function accountPage() {
 
   async function submit() {
     const email = body.querySelector("#a-email").value.trim();
-    const pw = body.querySelector("#a-pw").value;
     const msg = body.querySelector("#a-msg");
     const go = body.querySelector("#a-go");
+    if (mode === "reset") {
+      if (!email) { msg.textContent = "Enter your email."; return; }
+      go.disabled = true; msg.textContent = "Working…";
+      try {
+        const { error } = await Auth.resetPassword(email);
+        if (error) { msg.textContent = error.message; go.disabled = false; return; }
+        msg.textContent = "If that email has an account, a reset link is on its way — check your inbox.";
+      } catch (e) { msg.textContent = "Something went wrong. Please try again."; go.disabled = false; }
+      return;
+    }
+    const pw = body.querySelector("#a-pw").value;
     if (!email || !pw) { msg.textContent = "Enter your email and password."; return; }
     go.disabled = true; msg.textContent = "Working…";
     try {
@@ -1568,8 +1578,21 @@ function accountPage() {
   }
 
   function paint() {
-    card.querySelector("#tab-in").className = "btn btn-sm " + (mode === "in" ? "btn-primary" : "btn-ghost");
+    card.querySelector("#tab-in").className = "btn btn-sm " + (mode !== "up" ? "btn-primary" : "btn-ghost");
     card.querySelector("#tab-up").className = "btn btn-sm " + (mode === "up" ? "btn-primary" : "btn-ghost");
+    if (mode === "reset") {
+      body.innerHTML = `
+        <h1 style="margin:4px 0 2px">Reset your password</h1>
+        <p class="muted" style="margin-top:0">We'll email you a link to set a new password.</p>
+        <label class="field">Email <input type="email" id="a-email" placeholder="you@example.com"></label>
+        <button class="btn btn-primary btn-block" id="a-go">Send reset link</button>
+        <p class="help" id="a-msg" style="margin-top:10px"></p>
+        <p class="help" style="margin-top:10px"><a href="#/login" id="back-login">← Back to log in</a></p>`;
+      body.querySelector("#a-go").onclick = submit;
+      body.querySelector("#a-email").addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+      body.querySelector("#back-login").onclick = (e) => { e.preventDefault(); mode = "in"; paint(); };
+      return;
+    }
     body.innerHTML = `
       <h1 style="margin:4px 0 2px">${mode === "in" ? "Log in" : "Create an account"}</h1>
       <p class="muted" style="margin-top:0">${mode === "in" ? "Welcome back." : "You need an account to report, comment, support or flag."}</p>
@@ -1577,9 +1600,12 @@ function accountPage() {
       <label class="field">Email <input type="email" id="a-email" placeholder="you@example.com"></label>
       <label class="field">Password <input type="password" id="a-pw" placeholder="At least 6 characters"></label>
       <button class="btn btn-primary btn-block" id="a-go">${mode === "in" ? "Log in" : "Sign up"}</button>
+      ${mode === "in" ? `<p class="help" style="margin-top:10px"><a href="#/login" id="forgot">Forgot password?</a></p>` : ""}
       <p class="help" id="a-msg" style="margin-top:10px"></p>`;
     body.querySelector("#a-go").onclick = submit;
     body.querySelector("#a-pw").addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+    const forgot = body.querySelector("#forgot");
+    if (forgot) forgot.onclick = (e) => { e.preventDefault(); mode = "reset"; paint(); };
   }
   card.querySelector("#tab-in").onclick = () => { mode = "in"; paint(); };
   card.querySelector("#tab-up").onclick = () => { mode = "up"; paint(); };
@@ -1589,6 +1615,41 @@ function accountPage() {
 }
 route(/^\/login$/, accountPage);
 route(/^\/admin\/login$/, accountPage);
+
+/* ----- set a new password (landing page for the reset email link) ----- */
+route(/^\/reset-password$/, function resetPasswordPage() {
+  const wrap = document.createElement("div");
+  wrap.appendChild(publicNav());
+  const card = el(`
+    <div class="wrap section" style="max-width:440px">
+      <div class="card">
+        <h1 style="margin-bottom:4px">Set a new password</h1>
+        <p class="muted" style="margin-top:0">Choose a new password for your account.</p>
+        <label class="field">New password <input type="password" id="rp-pw" placeholder="At least 6 characters"></label>
+        <label class="field">Confirm password <input type="password" id="rp-pw2" placeholder="Re-enter password"></label>
+        <button class="btn btn-primary btn-block" id="rp-go">Update password</button>
+        <p class="help" id="rp-msg" style="margin-top:10px"></p>
+      </div>
+    </div>`);
+  const go = card.querySelector("#rp-go");
+  async function submit() {
+    const pw = card.querySelector("#rp-pw").value, pw2 = card.querySelector("#rp-pw2").value;
+    const msg = card.querySelector("#rp-msg");
+    if (pw.length < 6) { msg.textContent = "Password must be at least 6 characters."; return; }
+    if (pw !== pw2) { msg.textContent = "The two passwords don't match."; return; }
+    go.disabled = true; msg.textContent = "Updating…";
+    try {
+      const { error } = await SB.auth.updateUser({ password: pw });
+      if (error) { msg.textContent = error.message; go.disabled = false; return; }
+      window.__sdRecovery = false;
+      toast("Password updated"); navigate("/");
+    } catch (e) { msg.textContent = "Something went wrong. Please try again."; go.disabled = false; }
+  }
+  go.onclick = submit;
+  card.querySelector("#rp-pw2").addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+  wrap.appendChild(card);
+  return wrap;
+});
 
 route(/^\/admin\/logout$/, () => { DB.logout(); navigate("/"); return document.createElement("div"); });
 
@@ -2155,6 +2216,9 @@ let __appReady = false;
   if (!window.location.hash) window.location.hash = "#/";
   render();
   __appReady = true;
+  window.__sdReady = true;
+  // if a password-recovery link was opened, go straight to the reset screen
+  if (window.__sdRecovery && (location.hash || "").replace(/^#/, "") !== "/reset-password") navigate("/reset-password");
 
   // React to login / logout / token refresh: reload user-specific data + re-render.
   SB.auth.onAuthStateChange(async () => {
