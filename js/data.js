@@ -15,6 +15,8 @@ const DEFAULT_CATEGORIES = [
   { slug: "lack-of-cycling",      label: "Lack of cycling infrastructure",color: "#1e824c", icon: "🚲", is_active: true },
   { slug: "footpath-obstruction", label: "Footpath obstruction",          color: "#d79b00", icon: "🚧", is_active: true },
   { slug: "transit-stop-access",  label: "Transit stop access / condition",color: "#0984e3", icon: "🚉", is_active: true },
+  { slug: "pedestrian-comfort",   label: "Uncomfortable walking environment", color: "#16a085", icon: "🌳", is_active: true },
+  { slug: "other",                label: "Other issue",                       color: "#607d8b", icon: "❓", is_active: true },
 ];
 
 /* ---------- Editable site content (managed in /admin/settings) ---------- */
@@ -89,8 +91,11 @@ const DB = (() => {
   function loadCfg() {
     try {
       const s = JSON.parse(localStorage.getItem(CFG_KEY)) || {};
+      const categories = s.categories || structuredClone(DEFAULT_CATEGORIES);
+      // append any newly-added default categories the saved config doesn't have yet
+      DEFAULT_CATEGORIES.forEach((d) => { if (!categories.some((c) => c.slug === d.slug)) categories.push(structuredClone(d)); });
       return {
-        categories: s.categories || structuredClone(DEFAULT_CATEGORIES),
+        categories,
         settings: Object.assign(structuredClone(DEFAULT_SETTINGS), s.settings || {}),
       };
     } catch (e) {

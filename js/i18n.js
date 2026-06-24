@@ -112,6 +112,8 @@ const I18N = (() => {
     "Lack of cycling infrastructure": "缺乏骑行设施",
     "Footpath obstruction": "人行道阻塞",
     "Transit stop access / condition": "交通站点通达 / 状况",
+    "Uncomfortable walking environment": "行人环境不舒适",
+    "Other issue": "其他问题",
 
     // statuses
     "Pending moderation": "待审核",
