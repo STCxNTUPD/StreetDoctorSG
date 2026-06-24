@@ -71,7 +71,10 @@ const I18N = (() => {
     "🚉 Transit stations": "🚉 公共交通站点",
     "Clear filters": "清除筛选",
     "⚲ Filters": "⚲ 筛选",
+    "⌖ Locate me": "⌖ 定位到我",
     "＋ Report": "＋ 举报",
+    "Couldn't get your location — check the location permission in your browser.": "无法取得你的位置 — 请检查浏览器的定位权限。",
+    "Location isn't available on this device.": "此装置无法使用定位功能。",
 
     // report panel / form
     "📍 Click the map to set the location (or drag the pin).": "📍 点击地图设定位置（或拖动图钉）。",

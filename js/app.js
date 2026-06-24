@@ -442,6 +442,7 @@ route(/^\/map(?:\?.*)?$/, function mapPage() {
   const wrapEl = el(`
     <div class="map-page">
       <div id="map"></div>
+      <button class="map-locate" id="locate-me" aria-label="Locate me">⌖ Locate me</button>
       <button class="fab-filter" id="filters-toggle" aria-label="Filters">⚲ Filters</button>
       <button class="btn btn-accent fab" id="open-report">＋ Report</button>
       <aside class="report-drawer" id="report-drawer">
@@ -457,13 +458,13 @@ route(/^\/map(?:\?.*)?$/, function mapPage() {
   setTimeout(() => {
     const map = new maplibregl.Map({ container: "map", style: MAP_STYLE, center: SG_CENTER, zoom: 11.2 });
     map.addControl(new maplibregl.NavigationControl(), "bottom-right");
-    map.addControl(new maplibregl.GeolocateControl({ positionOptions: { enableHighAccuracy: true }, trackUserLocation: false }), "bottom-right");
 
     let issueMarkers = [];
     const drawer = wrapEl.querySelector("#report-drawer");
     let panel = null;            // report panel api when open
     let mode = "point";          // "point" | "segment"
     let pinMarker = null;
+    let meMarker = null;         // "you are here" dot from the Locate button
     let hoveredSeg = null;       // road-network feature id currently hovered
     let roadnetLoaded = false;
 
@@ -644,6 +645,25 @@ route(/^\/map(?:\?.*)?$/, function mapPage() {
     // mobile: filters are collapsed by default; this button toggles them
     const ftBtn = wrapEl.querySelector("#filters-toggle");
     ftBtn.onclick = () => ftBtn.classList.toggle("on", filters.classList.toggle("open"));
+
+    // one-tap locate: fly to the user's position, mark it, and (if reporting) drop the pin there
+    const locBtn = wrapEl.querySelector("#locate-me");
+    locBtn.onclick = () => {
+      if (!navigator.geolocation) return toast("Location isn't available on this device.");
+      locBtn.classList.add("busy");
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          locBtn.classList.remove("busy");
+          const lng = pos.coords.longitude, lat = pos.coords.latitude;
+          map.flyTo({ center: [lng, lat], zoom: 16, duration: 900 });
+          if (meMarker) meMarker.setLngLat([lng, lat]);
+          else meMarker = new maplibregl.Marker({ element: el(`<div class="me-dot"></div>`) }).setLngLat([lng, lat]).addTo(map);
+          if (drawer.classList.contains("open") && panel && mode === "point") { placePin(lng, lat); panel.setLocation(lng, lat); }
+        },
+        () => { locBtn.classList.remove("busy"); toast("Couldn't get your location — check the location permission in your browser."); },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+      );
+    };
 
     // mobile: drag the report sheet up/down so the user chooses how much map to see
     (function enableSheetDrag() {
